@@ -1,0 +1,41 @@
+{
+  "model": "yolox_s",
+  "backend": "tensorrt",
+  "precision": "fp32",
+  "input": [
+    640,
+    640
+  ],
+  "conf_thresh": 0.01,
+  "nms_iou": 0.65,
+  "images": 5000,
+  "stats": {
+    "AP": 0.4025866808976434,
+    "AP50": 0.5892074978521503,
+    "AP75": 0.435803327549396,
+    "AP_small": 0.23150292299414235,
+    "AP_medium": 0.4461505346105831,
+    "AP_large": 0.5391741856135718,
+    "AR1": 0.32319912934479444,
+    "AR10": 0.5175983547484294,
+    "AR100": 0.5499517384193131,
+    "AR_small": 0.3425020014271604,
+    "AR_medium": 0.6052515782624378,
+    "AR_large": 0.7026043903926064
+  },
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "cudnn": 92400,
+    "cudnn_allow_tf32": true,
+    "matmul_allow_tf32": false,
+    "python": "3.12.3",
+    "kernel": "6.18.54.1-microsoft-standard-WSL2",
+    "driver": "617.42",
+    "opencv": "5.0.0",
+    "tensorrt": "11.3.0.99"
+  },
+  "engine": "yolox_s_fp32.engine"
+}

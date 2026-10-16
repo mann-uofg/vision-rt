@@ -1,0 +1,100 @@
+{
+  "pipeline": "cpp-trt-sync",
+  "model": "yolox_s",
+  "precision": "fp16",
+  "engine": "yolox_s_fp16.engine",
+  "batch": 1,
+  "streams": 1,
+  "conf_thresh": 0.3,
+  "nms_iou": 0.45,
+  "video": {
+    "file": "barn022.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "frames": 1506,
+    "codec": "h264",
+    "color_space": "bt709",
+    "color_range": "tv"
+  },
+  "warmup_frames": 100,
+  "timed_frames": 1406,
+  "throughput_fps": 155.95,
+  "host_ms": {
+    "decode": {
+      "n": 1406,
+      "mean": 0.538699,
+      "p50": 0.523037,
+      "p90": 0.570719,
+      "p99": 0.884459,
+      "max": 1.13937
+    },
+    "preprocess": {
+      "n": 1406,
+      "mean": 1.95236,
+      "p50": 1.91226,
+      "p90": 2.08045,
+      "p99": 2.55097,
+      "max": 3.00734
+    },
+    "gpu": {
+      "n": 1406,
+      "mean": 3.56164,
+      "p50": 3.04572,
+      "p90": 6.26153,
+      "p99": 6.93115,
+      "max": 9.96802
+    },
+    "postprocess": {
+      "n": 1406,
+      "mean": 0.358098,
+      "p50": 0.34616,
+      "p90": 0.394502,
+      "p99": 0.555911,
+      "max": 0.793089
+    },
+    "e2e": {
+      "n": 1406,
+      "mean": 6.41233,
+      "p50": 5.93131,
+      "p90": 9.03168,
+      "p99": 9.83343,
+      "max": 13.6176
+    }
+  },
+  "gpu_ms": {
+    "h2d": {
+      "n": 1406,
+      "mean": 0.187246,
+      "p50": 0.184144,
+      "p90": 0.25704,
+      "p99": 0.293622,
+      "max": 0.419808
+    },
+    "infer": {
+      "n": 1406,
+      "mean": 2.89948,
+      "p50": 2.43618,
+      "p90": 5.3272,
+      "p99": 5.9738,
+      "max": 8.93117
+    },
+    "d2h": {
+      "n": 1406,
+      "mean": 0.294688,
+      "p50": 0.277248,
+      "p90": 0.39376,
+      "p99": 0.431072,
+      "max": 0.526688
+    }
+  },
+  "detections_per_frame": 6.96373,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}
