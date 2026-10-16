@@ -33,3 +33,26 @@ enable_testing()
 add_executable(test_core tests/cpp/test_core.cpp)
 target_link_libraries(test_core PRIVATE vrt_core)
 add_test(NAME core COMMAND test_core)
+
+# --- GPU ---------------------------------------------------------------------------------
+if(VRT_GPU)
+  find_package(CUDAToolkit REQUIRED)
+
+  set(TRT_ROOT "$ENV{TRT_ROOT}" CACHE PATH "TensorRT install directory")
+  find_path(TRT_INCLUDE_DIR NvInfer.h HINTS "${TRT_ROOT}/include" REQUIRED)
+  find_library(TRT_NVINFER nvinfer HINTS "${TRT_ROOT}/lib" REQUIRED)
+  add_library(TensorRT::nvinfer SHARED IMPORTED)
+  set_target_properties(TensorRT::nvinfer PROPERTIES
+    IMPORTED_LOCATION "${TRT_NVINFER}"
+    INTERFACE_INCLUDE_DIRECTORIES "${TRT_INCLUDE_DIR}")
+
+  add_library(vrt_gpu STATIC src/trt_engine.cpp src/sync_pipeline.cpp)
+  target_link_libraries(vrt_gpu PUBLIC vrt_core vrt_video TensorRT::nvinfer CUDA::cudart)
+  # TensorRT headers trip -Wpedantic/-Wextra; treat them as system headers.
+  target_include_directories(vrt_gpu SYSTEM PUBLIC "${TRT_INCLUDE_DIR}")
+
+  foreach(app vrt_detect vrt_coco)
+    add_executable(${app} apps/${app}.cpp)
+    target_link_libraries(${app} PRIVATE vrt_gpu)
+  endforeach()
+endif()
