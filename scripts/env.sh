@@ -16,3 +16,4 @@ export LD_LIBRARY_PATH="$TRT_ROOT/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LI
 export FFMPEG_ROOT="${FFMPEG_ROOT:-$HOME/opt/ffmpeg-n8.1-latest-linux64-gpl-shared-8.1}"
 export PATH="$FFMPEG_ROOT/bin:$PATH"
 export LD_LIBRARY_PATH="$FFMPEG_ROOT/lib:$LD_LIBRARY_PATH"
+export PKG_CONFIG_PATH="$FFMPEG_ROOT/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
