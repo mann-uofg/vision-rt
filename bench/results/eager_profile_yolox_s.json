@@ -1,0 +1,58 @@
+{
+  "model": "yolox_s",
+  "precision": "fp32-tf32",
+  "batch": 1,
+  "note": "model-only diagnostic on a fixed input; not end-to-end",
+  "kernels_per_forward": 451,
+  "kernel_time_ms": 2.5498229999999746,
+  "idle_cpu": {
+    "host_ms": {
+      "n": 1000,
+      "mean": 10.780939413,
+      "p50": 7.874251,
+      "p90": 20.616227600000002,
+      "p99": 30.1047211,
+      "max": 31.229927
+    },
+    "gpu_timeline_ms": {
+      "n": 1000,
+      "mean": 10.325438232421876,
+      "p50": 7.542127847671509,
+      "p90": 19.767695236206055,
+      "p99": 28.859096870422363,
+      "max": 29.939807891845703
+    }
+  },
+  "with_decode": {
+    "host_ms": {
+      "n": 1000,
+      "mean": 12.040126769999999,
+      "p50": 11.8579985,
+      "p90": 16.2152985,
+      "p99": 21.555121179999997,
+      "max": 28.445241
+    },
+    "gpu_timeline_ms": {
+      "n": 1000,
+      "mean": 11.518421683788299,
+      "p50": 11.362847805023193,
+      "p90": 15.532608032226562,
+      "p99": 20.680175552368162,
+      "max": 27.2607364654541
+    }
+  },
+  "gpu_busy_fraction_p50": 0.33807740355225946,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "torch": "2.14.1+cu130",
+    "torch_cuda": "13.0",
+    "cudnn": 92400,
+    "cudnn_allow_tf32": true,
+    "matmul_allow_tf32": false,
+    "python": "3.12.3",
+    "kernel": "6.18.54.1-microsoft-standard-WSL2",
+    "driver": "617.42",
+    "opencv": "5.0.0"
+  }
+}
