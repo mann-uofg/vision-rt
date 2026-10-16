@@ -7,8 +7,32 @@ on:
 permissions:
   contents: read
 
+env:
+  FFMPEG_DEV: libavformat-dev libavcodec-dev libavutil-dev libswscale-dev pkg-config ninja-build
+
 jobs:
-  # Hosted runners have no GPU, so CI covers the CPU-side Python code. GPU tests run locally.
+  # Hosted runners have no GPU, CUDA or TensorRT, so CI builds and tests the CPU side only
+  # (the `ci` preset turns VRT_GPU off). GPU code is built and tested locally.
+  cpp:
+    name: cpp / ${{ matrix.cxx }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    env:
+      CXX: ${{ matrix.cxx }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Install FFmpeg dev packages and Ninja
+        run: sudo apt-get update && sudo apt-get install -y $FFMPEG_DEV
+      - name: Configure
+        run: cmake --preset ci
+      - name: Build
+        run: cmake --build --preset ci
+      - name: Test
+        run: ctest --preset ci
+
   python:
     runs-on: ubuntu-24.04
     steps:
@@ -18,6 +42,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
         with:
           python-version: "3.12"
+      - name: Build the C API the tests load
+        run: |
+          sudo apt-get update && sudo apt-get install -y $FFMPEG_DEV
+          cmake --preset ci && cmake --build --preset ci --target vrt_capi
       - name: Install CPU-only PyTorch and the other requirements
         run: |
           pip install torch==$(grep '^torch==' requirements.txt | cut -d= -f3) \
@@ -28,9 +56,11 @@ jobs:
       - name: Test
         run: python -m pytest -q
 
-  shell:
+  lint:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: clang-format
+        run: git ls-files '*.h' '*.cpp' '*.cu' '*.cuh' | xargs -r clang-format --dry-run --Werror
       - name: shellcheck
         run: shellcheck scripts/*.sh bench/*.sh
