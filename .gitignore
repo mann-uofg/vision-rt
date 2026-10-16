@@ -1,0 +1,46 @@
+# Build output
+build/
+compile_commands.json
+CMakeUserPresets.json
+
+# Private notes and agent context (kept local, backed up outside the repo)
+INTERVIEW.md
+AGENTS.md
+CLAUDE.md
+.claude/
+
+# Models, engines and calibration caches (downloaded or built locally, never committed)
+models/
+*.pth
+*.onnx
+*.engine
+*.plan
+*.calib
+*.cache
+
+# Datasets and footage (fetched by scripts, never committed)
+data/
+*.mp4
+*.mkv
+*.h264
+*.hevc
+
+# Profiler reports
+*.nsys-rep
+*.ncu-rep
+*.qdrep
+*.sqlite
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.vs/
+*.swp
+.DS_Store
+Thumbs.db
