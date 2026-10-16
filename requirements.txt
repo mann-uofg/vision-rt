@@ -1,0 +1,15 @@
+# Python side: model loading, the naive baseline, COCO evaluation, tests.
+# torch/torchvision come from the CUDA 13.0 index locally:
+#   pip install torch==2.14.1 torchvision==0.29.1 --index-url https://download.pytorch.org/whl/cu130
+# The tensorrt wheel ships inside the TensorRT tar ($TRT_ROOT/python), so it isn't listed here.
+torch==2.14.1
+torchvision==0.29.1
+numpy==2.5.2
+opencv-python-headless==5.0.0.93
+pycocotools==2.0.11
+onnx==1.23.2
+# needed by the upstream YOLOX package on import
+loguru==0.7.3
+psutil==7.2.2
+packaging==26.3
+pytest==9.1.1

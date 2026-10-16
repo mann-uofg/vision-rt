@@ -1,0 +1,15 @@
+[project]
+name = "vrt"
+version = "0.1.0"
+description = "Python side of vision-rt: model loading, baseline pipeline, COCO evaluation"
+requires-python = ">=3.12"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["python"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
