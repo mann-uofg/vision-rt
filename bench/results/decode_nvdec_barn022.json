@@ -1,0 +1,27 @@
+{
+  "decoder": "nvdec",
+  "video": "data/footage/barn022.mp4",
+  "codec": "h264 (nvdec)",
+  "width": 1920,
+  "height": 1080,
+  "frames": 1506,
+  "warmup_frames": 30,
+  "decode_ms": {
+    "n": 1476,
+    "mean": 1.07671,
+    "p50": 1.00874,
+    "p90": 1.24329,
+    "p99": 2.25768,
+    "max": 2.8526
+  },
+  "cpu_ms_per_frame": 0.326622,
+  "output": "NV12 in GPU memory",
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}

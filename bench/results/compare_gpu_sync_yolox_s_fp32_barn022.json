@@ -1,0 +1,15 @@
+{
+  "ref": "baseline_yolox_s_fp32-tf32_barn022.npz",
+  "test": "gpu_sync_yolox_s_fp32_barn022.csv",
+  "frames": 1406,
+  "ref_boxes": 9783,
+  "test_boxes": 9802,
+  "matched": 9765,
+  "recall_vs_ref": 0.9981600735970562,
+  "precision_vs_ref": 0.9962252601509896,
+  "iou_thresh": 0.5,
+  "matched_iou_mean": 0.9944073820675158,
+  "matched_iou_p01": 0.9315656762824188,
+  "score_absdiff_mean": 0.00225770974437364,
+  "score_absdiff_max": 0.10956232806015015
+}
