@@ -3,6 +3,7 @@
 //   vrt_detect --engine models/yolox_s_fp16.engine --video data/footage/barn022.mp4
 //              [--warmup 100] [--frames N] [--conf 0.3] [--nms 0.45]
 //              [--json out.json] [--dets out.csv] [--dump-input FRAME:path.bin]
+//              [--cuda-graph]
 //
 // Output schema matches tools/baseline.py so the two can sit in one table.
 
@@ -13,6 +14,7 @@
 #include <numeric>
 
 #include "args.h"
+#include "vrt/nvtx.h"
 #include "vrt/postprocess.h"
 #include "vrt/stats.h"
 #include "vrt/sync_pipeline.h"
@@ -49,7 +51,8 @@ int run(const vrt::Args& args) {
     dump_path = v.substr(v.find(':') + 1);
   }
 
-  vrt::SyncPipeline pipe(engine_path);
+  const bool cuda_graph = args.has("cuda-graph");
+  vrt::SyncPipeline pipe(engine_path, cuda_graph);
   vrt::VideoSource video(video_path);
   const vrt::VideoInfo& vi = video.info();
 
@@ -65,7 +68,11 @@ int run(const vrt::Args& args) {
   vrt::StageTimes st;
   for (long long i = 0; max_frames < 0 || i < warmup + max_frames; ++i) {
     const auto t0 = clock::now();
-    if (!video.read(frame)) break;
+    vrt::NvtxRange frame_range("frame");
+    nvtxRangePushA("decode (cpu)");
+    const bool got = video.read(frame);
+    nvtxRangePop();
+    if (!got) break;
     const double decode_ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
     const vrt::Detections dets = pipe.run(frame, conf, nms, &st);
     const double e2e_ms = std::chrono::duration<double, std::milli>(clock::now() - t0).count();
@@ -102,7 +109,8 @@ int run(const vrt::Args& args) {
 
   vrt::JsonWriter j;
   j.begin_object()
-      .field("pipeline", "cpp-trt-sync")
+      .field("pipeline", cuda_graph ? "cpp-trt-sync-graph" : "cpp-trt-sync")
+      .field("cuda_graph", cuda_graph)
       .field("model", model)
       .field("precision", precision)
       .field("engine", basename(engine_path));

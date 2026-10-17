@@ -27,7 +27,8 @@ struct StageTimes {
 // isolates what the engine itself buys.
 class SyncPipeline {
  public:
-  explicit SyncPipeline(const std::string& engine_path);
+  // cuda_graph: replay the engine from a captured CUDA graph instead of calling enqueueV3.
+  explicit SyncPipeline(const std::string& engine_path, bool cuda_graph = false);
   ~SyncPipeline();
   SyncPipeline(const SyncPipeline&) = delete;
   SyncPipeline& operator=(const SyncPipeline&) = delete;

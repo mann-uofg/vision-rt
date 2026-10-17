@@ -6,6 +6,7 @@
 #include "vrt/cuda_check.h"
 #include "vrt/half.h"
 #include "vrt/letterbox.h"
+#include "vrt/nvtx.h"
 #include "vrt/postprocess.h"
 
 namespace vrt {
@@ -18,7 +19,7 @@ double ms_since(std::chrono::steady_clock::time_point t) {
 
 }  // namespace
 
-SyncPipeline::SyncPipeline(const std::string& engine_path) : engine_(engine_path) {
+SyncPipeline::SyncPipeline(const std::string& engine_path, bool cuda_graph) : engine_(engine_path) {
   const TensorInfo& in = engine_.input();
   const TensorInfo& out = engine_.output();
   if (in.dims.nbDims != 4 || in.dims.d[0] != 1 || in.dims.d[1] != 3)
@@ -47,6 +48,7 @@ SyncPipeline::SyncPipeline(const std::string& engine_path) : engine_(engine_path
   engine_.bind(out.name, d_out_);
   VRT_CUDA_CHECK(cudaStreamCreateWithFlags(&stream_, cudaStreamNonBlocking));
   for (auto& e : ev_) VRT_CUDA_CHECK(cudaEventCreate(&e));
+  if (cuda_graph) engine_.capture_graph(stream_);
 }
 
 SyncPipeline::~SyncPipeline() {
@@ -61,6 +63,7 @@ Detections SyncPipeline::run(const BgrImage& frame, float conf_thresh, float iou
   using clock = std::chrono::steady_clock;
 
   auto t = clock::now();
+  nvtxRangePushA("preprocess (cpu)");
   const void* host_in;
   if (fp16_input_) {
     letterbox_bgr_to_chw_half(frame.data.data(), frame.width, frame.height, frame.stride, in_w_,
@@ -71,9 +74,11 @@ Detections SyncPipeline::run(const BgrImage& frame, float conf_thresh, float iou
                          chw_.data());
     host_in = chw_.data();
   }
+  nvtxRangePop();
   const double pre_ms = ms_since(t);
 
   t = clock::now();
+  nvtxRangePushA("h2d + infer + d2h");
   // Pageable host memory on purpose: same as the baseline. Pinned buffers come in M2.
   VRT_CUDA_CHECK(cudaEventRecord(ev_[0], stream_));
   VRT_CUDA_CHECK(
@@ -85,9 +90,11 @@ Detections SyncPipeline::run(const BgrImage& frame, float conf_thresh, float iou
                                  cudaMemcpyDeviceToHost, stream_));
   VRT_CUDA_CHECK(cudaEventRecord(ev_[3], stream_));
   VRT_CUDA_CHECK(cudaStreamSynchronize(stream_));
+  nvtxRangePop();
   const double gpu_ms = ms_since(t);
 
   t = clock::now();
+  NvtxRange post_range("postprocess (cpu)");
   const float scale = letterbox_geometry(frame.width, frame.height, in_w_, in_h_).scale;
   Detections dets =
       postprocess(preds_.data(), num_anchors_, num_classes_, scale, conf_thresh, iou_thresh);

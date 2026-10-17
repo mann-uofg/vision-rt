@@ -35,8 +35,15 @@ class TrtEngine {
   void bind(const std::string& name, void* device_ptr);
 
   // Enqueue inference on `stream`. Returns immediately; synchronize the stream (or an
-  // event recorded after this) before reading outputs.
+  // event recorded after this) before reading outputs. Replays the CUDA graph if one has
+  // been captured, otherwise calls enqueueV3.
   void enqueue(cudaStream_t stream);
+
+  // Record one enqueueV3 into a CUDA graph, so later enqueue() calls are a single
+  // cudaGraphLaunch instead of ~160 separate kernel launches. Bind all tensors first: the
+  // graph bakes in their addresses, so they must not change afterwards.
+  void capture_graph(cudaStream_t stream);
+  bool has_graph() const { return graph_exec_ != nullptr; }
 
  private:
   struct Deleter {
@@ -49,6 +56,8 @@ class TrtEngine {
   std::unique_ptr<nvinfer1::ICudaEngine, Deleter> engine_;
   std::unique_ptr<nvinfer1::IExecutionContext, Deleter> context_;
   std::vector<TensorInfo> tensors_;
+  cudaGraph_t graph_ = nullptr;
+  cudaGraphExec_t graph_exec_ = nullptr;
 };
 
 std::size_t dtype_size(nvinfer1::DataType t);

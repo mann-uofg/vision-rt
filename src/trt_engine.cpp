@@ -7,6 +7,8 @@
 #include <iterator>
 #include <stdexcept>
 
+#include "vrt/cuda_check.h"
+
 namespace vrt {
 
 namespace {
@@ -110,7 +112,10 @@ TrtEngine::TrtEngine(const std::string& engine_path) {
   }
 }
 
-TrtEngine::~TrtEngine() = default;
+TrtEngine::~TrtEngine() {
+  if (graph_exec_) cudaGraphExecDestroy(graph_exec_);
+  if (graph_) cudaGraphDestroy(graph_);
+}
 
 const TensorInfo& TrtEngine::input() const {
   for (const auto& t : tensors_)
@@ -130,7 +135,31 @@ void TrtEngine::bind(const std::string& name, void* device_ptr) {
 }
 
 void TrtEngine::enqueue(cudaStream_t stream) {
+  if (graph_exec_) {
+    VRT_CUDA_CHECK(cudaGraphLaunch(graph_exec_, stream));
+  } else if (!context_->enqueueV3(stream)) {
+    throw std::runtime_error("enqueueV3 failed");
+  }
+}
+
+void TrtEngine::capture_graph(cudaStream_t stream) {
+  if (graph_exec_) return;
+  // One ordinary run first: TensorRT does lazy setup on the first enqueue (allocations,
+  // stream/event creation) that is not allowed inside a capture.
   if (!context_->enqueueV3(stream)) throw std::runtime_error("enqueueV3 failed");
+  VRT_CUDA_CHECK(cudaStreamSynchronize(stream));
+
+  VRT_CUDA_CHECK(cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+  const bool ok = context_->enqueueV3(stream);
+  cudaGraph_t graph = nullptr;
+  const cudaError_t end = cudaStreamEndCapture(stream, &graph);
+  if (!ok || end != cudaSuccess) {
+    if (graph) cudaGraphDestroy(graph);
+    throw std::runtime_error(std::string("capturing enqueueV3 into a CUDA graph failed: ") +
+                             (ok ? cudaGetErrorString(end) : "enqueueV3 returned false"));
+  }
+  graph_ = graph;
+  VRT_CUDA_CHECK(cudaGraphInstantiate(&graph_exec_, graph_, 0));
 }
 
 }  // namespace vrt
