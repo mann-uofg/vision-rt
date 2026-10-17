@@ -15,17 +15,8 @@ LetterboxGeometry letterbox_geometry(int src_w, int src_h, int dst_w, int dst_h)
   return {static_cast<float>(r), static_cast<int>(src_w * r), static_cast<int>(src_h * r)};
 }
 
-namespace {
-
-// Source coordinate and weight for one destination index, with OpenCV's mapping:
-// src = (dst + 0.5) * (src_size / dst_size) - 0.5, clamped to the image.
-struct Tap {
-  int i0, i1;
-  float w1;  // weight of i1; i0 gets 1 - w1
-};
-
-std::vector<Tap> make_taps(int src_size, int dst_size) {
-  std::vector<Tap> taps(static_cast<std::size_t>(dst_size));
+std::vector<LetterboxTap> letterbox_taps(int src_size, int dst_size) {
+  std::vector<LetterboxTap> taps(static_cast<std::size_t>(dst_size));
   const double ratio = static_cast<double>(src_size) / dst_size;
   for (int d = 0; d < dst_size; ++d) {
     const double f = (d + 0.5) * ratio - 0.5;
@@ -44,6 +35,8 @@ std::vector<Tap> make_taps(int src_size, int dst_size) {
   return taps;
 }
 
+namespace {
+
 // Shared body: resizes into the top-left of the canvas and pads the rest. Every output value
 // is an integer 0-255; `convert` turns it into the output type.
 template <typename T, typename Convert>
@@ -53,8 +46,8 @@ void letterbox_impl(const std::uint8_t* src, int src_w, int src_h, int src_strid
   const std::size_t plane = static_cast<std::size_t>(dst_w) * dst_h;
   const T pad = convert(kPadValue);
 
-  const std::vector<Tap> xs = make_taps(src_w, g.content_w);
-  const std::vector<Tap> ys = make_taps(src_h, g.content_h);
+  const std::vector<LetterboxTap> xs = letterbox_taps(src_w, g.content_w);
+  const std::vector<LetterboxTap> ys = letterbox_taps(src_h, g.content_h);
 
   for (int c = 0; c < 3; ++c) {
     T* p = dst + c * plane;
@@ -65,14 +58,14 @@ void letterbox_impl(const std::uint8_t* src, int src_w, int src_h, int src_strid
   }
 
   for (int y = 0; y < g.content_h; ++y) {
-    const Tap ty = ys[static_cast<std::size_t>(y)];
+    const LetterboxTap ty = ys[static_cast<std::size_t>(y)];
     const std::uint8_t* row0 = src + static_cast<std::ptrdiff_t>(ty.i0) * src_stride;
     const std::uint8_t* row1 = src + static_cast<std::ptrdiff_t>(ty.i1) * src_stride;
     T* out_b = dst + static_cast<std::size_t>(y) * dst_w;
     T* out_g = out_b + plane;
     T* out_r = out_g + plane;
     for (int x = 0; x < g.content_w; ++x) {
-      const Tap tx = xs[static_cast<std::size_t>(x)];
+      const LetterboxTap tx = xs[static_cast<std::size_t>(x)];
       const std::uint8_t* p00 = row0 + tx.i0 * 3;
       const std::uint8_t* p01 = row0 + tx.i1 * 3;
       const std::uint8_t* p10 = row1 + tx.i0 * 3;

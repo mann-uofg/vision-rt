@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 namespace vrt {
 
@@ -13,6 +14,15 @@ struct LetterboxGeometry {
 
 // Same rule as YOLOX: scale = min(dst_h / src_h, dst_w / src_w), sizes truncated toward zero.
 LetterboxGeometry letterbox_geometry(int src_w, int src_h, int dst_w, int dst_h);
+
+// Bilinear source taps for each destination index along one axis, with OpenCV's mapping:
+// src = (dst + 0.5) * (src_size / dst_size) - 0.5, clamped to the image. The CPU letterbox and
+// the GPU kernel both use these tables, so they sample exactly the same pixels and weights.
+struct LetterboxTap {
+  int i0, i1;
+  float w1;  // weight of i1; i0 gets 1 - w1
+};
+std::vector<LetterboxTap> letterbox_taps(int src_size, int dst_size);
 
 // CPU letterbox, the C++ twin of python/vrt/preprocess.py:
 //   interleaved BGR uint8 (row stride in bytes) -> planar CHW float, values 0-255, BGR order,

@@ -60,8 +60,9 @@ def test_letterbox_within_one_of_reference(lib, hw):
     ref, _ = letterbox(img, (640, 640))
     diff = np.abs(ours - ref)
     assert diff.max() <= 1
-    # Measured: identical for every downscale here (1080p, 480p, 427p); ~8% of values off by
-    # one when upscaling 333x517, where more taps land near a rounding boundary.
+    # cv2 uses fixed-point weights for uint8 resizes. Identical when the scale is a whole ratio
+    # or 1 (1080p, 480p and 427x640 here); ~8% of values off by one for 333x517, where the
+    # weights are arbitrary fractions.
     assert (diff > 0).mean() < 0.12
 
 
