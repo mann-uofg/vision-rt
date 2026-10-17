@@ -64,9 +64,11 @@ int run(const vrt::Args& args) {
 
   std::vector<double> decode, pre, gpu, post, e2e, h2d, infer, d2h;
   std::vector<double> ndets;
+  double cpu_begin = 0, cpu_end = 0;
   vrt::BgrImage frame;
   vrt::StageTimes st;
   for (long long i = 0; max_frames < 0 || i < warmup + max_frames; ++i) {
+    if (i == warmup) cpu_begin = vrt::process_cpu_ms();
     const auto t0 = clock::now();
     vrt::NvtxRange frame_range("frame");
     nvtxRangePushA("decode (cpu)");
@@ -100,6 +102,7 @@ int run(const vrt::Args& args) {
       }
     }
   }
+  cpu_end = vrt::process_cpu_ms();
   if (e2e.empty()) throw std::runtime_error("no frames timed; video shorter than --warmup?");
 
   const std::string name = stem(engine_path);  // yolox_s_fp16
@@ -127,6 +130,7 @@ int run(const vrt::Args& args) {
       .end_object();
   j.field("warmup_frames", warmup).field("timed_frames", static_cast<long long>(e2e.size()));
   j.field("throughput_fps", 1000.0 / e2e_s.mean);
+  j.field("cpu_ms_per_frame", (cpu_end - cpu_begin) / static_cast<double>(e2e.size()));
   j.begin_object("host_ms")
       .field("decode", vrt::summarize(decode))
       .field("preprocess", vrt::summarize(pre))

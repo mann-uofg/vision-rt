@@ -78,9 +78,12 @@ def main() -> None:
     gpu = {k: [] for k in GPU_STAGES}
     dets_per_frame = []
     frame_idx = 0
+    cpu_begin = 0.0
 
     with torch.inference_mode():
         while args.frames is None or frame_idx < args.warmup + args.frames:
+            if frame_idx == args.warmup:
+                cpu_begin = time.process_time()  # all threads of this process
             t0 = time.perf_counter_ns()
             ok, frame = cap.read()
             if not ok:
@@ -111,6 +114,7 @@ def main() -> None:
                 dets_per_frame.append(dets)
             frame_idx += 1
 
+    cpu_ms = (time.process_time() - cpu_begin) * 1000
     timed = len(host["e2e"])
     if timed == 0:
         raise SystemExit("no frames timed; video shorter than --warmup?")
@@ -131,6 +135,7 @@ def main() -> None:
         "warmup_frames": args.warmup,
         "timed_frames": timed,
         "throughput_fps": 1000.0 / e2e["mean"],
+        "cpu_ms_per_frame": cpu_ms / timed,
         "host_ms": {k: summarize_ms(v) for k, v in host.items()},
         "gpu_ms": {k: summarize_ms(v) for k, v in gpu.items()},
         "detections_per_frame": float(np.mean([len(d) for d in dets_per_frame])),

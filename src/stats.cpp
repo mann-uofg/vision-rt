@@ -1,5 +1,7 @@
 #include "vrt/stats.h"
 
+#include <sys/resource.h>
+
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -15,6 +17,13 @@ double percentile(std::vector<double> v, double q) {
   const auto lo = static_cast<std::size_t>(std::floor(pos));
   const std::size_t hi = std::min(lo + 1, v.size() - 1);
   return v[lo] + (v[hi] - v[lo]) * (pos - static_cast<double>(lo));
+}
+
+double process_cpu_ms() {
+  rusage u{};
+  getrusage(RUSAGE_SELF, &u);
+  auto ms = [](const timeval& tv) { return tv.tv_sec * 1e3 + tv.tv_usec / 1e3; };
+  return ms(u.ru_utime) + ms(u.ru_stime);
 }
 
 Summary summarize(const std::vector<double>& v) {

@@ -54,11 +54,11 @@ int run(const vrt::Args& args) {
   }
 
   std::vector<double> times;
+  double cpu_begin = 0, cpu_end = 0;
   vrt::VideoInfo info;
   long long n = 0;
   if (decoder == "nvdec") {
-    cudaStream_t stream;
-    VRT_CUDA_CHECK(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    vrt::CudaStream stream;
     vrt::NvdecSource src(video, stream);
     info = src.info();
     vrt::GpuFrame frame;
@@ -68,11 +68,12 @@ int run(const vrt::Args& args) {
       // The copy out of the decoder is queued on `stream`; wait for it so the time is the
       // full cost of getting a usable frame.
       VRT_CUDA_CHECK(cudaStreamSynchronize(stream));
+      if (n == warmup) cpu_begin = vrt::process_cpu_ms();
       if (n >= warmup) times.push_back(ms_since(t));
+      cpu_end = vrt::process_cpu_ms();
       if (n == dump_frame) dump_nv12(frame, dump_path);
     }
     frame.release();
-    VRT_CUDA_CHECK(cudaStreamDestroy(stream));
   } else if (decoder == "cpu") {
     vrt::VideoSource src(video);
     info = src.info();
@@ -80,7 +81,9 @@ int run(const vrt::Args& args) {
     for (;; ++n) {
       const auto t = clock_type::now();
       if (!src.read(img)) break;
+      if (n == warmup) cpu_begin = vrt::process_cpu_ms();
       if (n >= warmup) times.push_back(ms_since(t));
+      cpu_end = vrt::process_cpu_ms();
     }
   } else {
     throw std::invalid_argument("--decoder must be nvdec or cpu");
@@ -88,6 +91,7 @@ int run(const vrt::Args& args) {
   if (times.empty()) throw std::runtime_error("no frames timed");
 
   const vrt::Summary s = vrt::summarize(times);
+  const double cpu_per_frame = (cpu_end - cpu_begin) / static_cast<double>(times.size());
   std::printf("%s: %lld frames, %dx%d %s, decode mean %.3f p50 %.3f p99 %.3f ms (%.0f fps)\n",
               decoder.c_str(), n, info.width, info.height, info.codec.c_str(), s.mean, s.p50, s.p99,
               1000.0 / s.mean);
@@ -96,7 +100,7 @@ int run(const vrt::Args& args) {
     vrt::JsonWriter j;
     j.begin_object().field("decoder", decoder).field("video", video).field("codec", info.codec);
     j.field("width", info.width).field("height", info.height).field("frames", n);
-    j.field("warmup_frames", warmup).field("decode_ms", s);
+    j.field("warmup_frames", warmup).field("decode_ms", s).field("cpu_ms_per_frame", cpu_per_frame);
     j.field("output", decoder == "nvdec" ? "NV12 in GPU memory" : "BGR24 in host memory");
     j.begin_object("environment");
     vrt::write_environment(j);

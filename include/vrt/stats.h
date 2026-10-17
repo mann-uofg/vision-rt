@@ -13,6 +13,10 @@ struct Summary {
 // Percentiles with linear interpolation between closest ranks (numpy's default), so C++ and
 // Python results files are directly comparable.
 double percentile(std::vector<double> v, double q);
+
+// User + system CPU time this process has used so far, in ms, across all its threads.
+double process_cpu_ms();
+
 Summary summarize(const std::vector<double>& v);
 
 // Minimal JSON object writer: enough for flat-ish results files, no dependency.

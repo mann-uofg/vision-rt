@@ -13,3 +13,24 @@
                                " (" + __FILE__ + ":" + std::to_string(__LINE__) + ")");          \
     }                                                                                            \
   } while (0)
+
+namespace vrt {
+
+// Owns a non-blocking CUDA stream. Declare it before anything that queues work on it, so it
+// is destroyed last.
+class CudaStream {
+ public:
+  CudaStream() { VRT_CUDA_CHECK(cudaStreamCreateWithFlags(&s_, cudaStreamNonBlocking)); }
+  ~CudaStream() {
+    cudaStreamSynchronize(s_);
+    cudaStreamDestroy(s_);
+  }
+  CudaStream(const CudaStream&) = delete;
+  CudaStream& operator=(const CudaStream&) = delete;
+  operator cudaStream_t() const { return s_; }
+
+ private:
+  cudaStream_t s_ = nullptr;
+};
+
+}  // namespace vrt
