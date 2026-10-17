@@ -7,44 +7,73 @@ The point is the end-to-end number, broken down per stage, not model-only FPS.
 The scenario is livestock monitoring: YOLOX detects cows (a COCO class, so no fine-tuning)
 in public-domain USDA dairy footage.
 
-> Work in progress. M0 (baseline) and M1 (TensorRT + C++) are done; M2 moves decode,
-> preprocessing and NMS onto the GPU.
+> Work in progress. M0-M2 are done: the whole per-frame path runs on the GPU. Next: INT8 and
+> multiple camera streams (M3).
 
 ## Results so far
 
-RTX 5070 Ti, WSL2, YOLOX at 640x640, batch 1, one stream. Every number comes from a file in
+RTX 5070 Ti, WSL2, YOLOX at 640x640. Every number comes from a file in
 [`bench/results/`](bench/results), which records the conditions and versions.
 
-### Latency, per stage
+### Where the time goes, step by step (YOLOX-S)
 
 <!-- latency:begin -->
-| Model | Pipeline | Precision | decode | preprocess | H2D + infer + D2H | NMS | **end-to-end mean / p50 / p99** | throughput | vs M0 |
-|---|---|---|---|---|---|---|---|---|---|
-| YOLOX-S | PyTorch eager (M0) | fp32-tf32 | 1.08 | 1.24 | 10.90 | 0.54 | **13.75 / 10.79 / 32.32** | 73 fps | 1.00x |
-| YOLOX-S | C++ + TensorRT (M1) | fp32 | 0.55 | 1.83 | 4.14 | 0.36 | **6.87 / 6.17 / 10.27** | 146 fps | 2.00x |
-| YOLOX-S | C++ + TensorRT (M1) | tf32 | 0.54 | 1.82 | 3.80 | 0.36 | **6.53 / 5.93 / 9.16** | 153 fps | 2.11x |
-| YOLOX-S | C++ + TensorRT (M1) | fp16 | 0.54 | 1.95 | 3.56 | 0.36 | **6.41 / 5.93 / 9.83** | 156 fps | 2.14x |
-| YOLOX-M | PyTorch eager (M0) | fp32-tf32 | 1.02 | 1.26 | 14.67 | 0.55 | **17.51 / 13.17 / 41.50** | 57 fps | 1.00x |
-| YOLOX-M | C++ + TensorRT (M1) | fp32 | 0.55 | 1.85 | 5.44 | 0.36 | **8.20 / 7.78 / 11.47** | 122 fps | 2.14x |
-| YOLOX-M | C++ + TensorRT (M1) | tf32 | 0.54 | 1.84 | 5.22 | 0.36 | **7.96 / 7.50 / 10.60** | 126 fps | 2.20x |
-| YOLOX-M | C++ + TensorRT (M1) | fp16 | 0.54 | 1.55 | 4.06 | 0.36 | **6.50 / 5.39 / 10.46** | 154 fps | 2.69x |
+| Pipeline | Precision | decode | preprocess | inference | NMS | copies | **latency** mean / p50 / p99 | **fps** | vs M0 | CPU ms/frame |
+|---|---|---|---|---|---|---|---|---|---|---|
+| M0: PyTorch eager, CPU decode/pre/NMS | fp32-tf32 | 0.98 | 1.24 | 9.74 | 0.56 | 0.80 | **13.73** / 10.67 / 34.62 | **73** | 1.0x | 49.6 |
+| M1: C++ + TensorRT, CPU decode/pre/NMS | fp16 | 0.56 | 1.60 | 2.80 | 0.32 | 0.50 | **6.02** / 5.06 / 9.51 | **166** | 2.3x | 10.3 |
+| M1 + CUDA graph for the engine | fp16 | 0.56 | 1.59 | 0.60 | 0.33 | 0.51 | **3.71** / 3.64 / 4.62 | **270** | 3.7x | 7.6 |
+| M2: NVDEC + GPU pre/NMS, one frame at a time | fp16 | 0.97 | 0.03 | 0.59 | 0.15 | 0.01 | **1.80** / 1.75 / 2.93 | **548** | 7.5x | 1.1 |
+| M2, decode overlapped with GPU work | fp16 | 1.04 | 0.04 | 0.59 | 0.16 | 0.01 | **2.55** / 2.51 / 4.00 | **775** | 10.6x | 0.5 |
 
-Stage columns are mean ms per frame, host wall-clock; they add up to end-to-end. Clip `barn022.mp4`, 1920x1080 h264, 1406 timed frames after 100 warm-up; batch 1, one stream.
+Mean ms per frame on `barn022.mp4` (1920x1080 H.264), batch 1, one stream, 1406 timed frames after 100 warm-up. CPU stages are host wall-clock; GPU stages (inference everywhere, and preprocess/NMS/copies in M2) are CUDA event times. Latency is from asking for a frame to having its detections in host memory. In the pipelined run stages overlap, so they don't add up to latency, and latency includes waiting behind the next frame's decode. CPU ms/frame is process CPU time (all threads) over the timed frames.
 <!-- latency:end -->
 
-- **M0, naive PyTorch:** OpenCV decode, CPU letterbox, eager PyTorch, CPU NMS. One forward pass
-  of YOLOX-S launches 451 CUDA kernels worth 2.55 ms of GPU time, but the GPU is busy for only a
-  third of it; the rest is waiting on Python kernel launches
-  ([`eager_profile_yolox_s.json`](bench/results/eager_profile_yolox_s.json)). That's why
-  YOLOX-M, with ~2.8x the FLOPs, is only 27% slower.
-- **M1, C++ + TensorRT:** the same stages and the same pageable copies, with TensorRT in place
-  of PyTorch and C++ in place of Python, so the change isolates the engine. The C++ letterbox
-  produces bit-identical input to the Python one on the benchmark clip, and the detections
-  match the baseline's on 99.98-100% of boxes
-  ([`compare_cpp_sync_*.json`](bench/results)).
-- What M1 shows: FP16 makes the engine ~3x faster than FP32 on its own, but end-to-end barely
-  moves. Decode, the CPU letterbox, NMS and per-kernel launch overhead now dominate. That's
-  what M2 is for.
+![M1 timeline](docs/timeline_m1.png)
+![M2 timeline](docs/timeline_m2.png)
+
+Four frames of each, drawn from Nsight Systems traces
+([`bench/profile_timelines.sh`](bench/profile_timelines.sh)). In M1 the CPU thread never
+stops: decode, letterbox, then waiting while ~160 kernels are launched one by one, then NMS;
+the GPU works in sparse bursts. In M2 the CPU thread decodes (NVDEC) and queues work; the GPU
+runs each frame as one dense block of inference, a few NMS kernels and a tiny result copy,
+and is idle about half the time. That headroom is what multiple camera streams will use (M3).
+
+How each step earned its gain:
+
+- **M0 → M1 (TensorRT, C++): 2.3x.** One YOLOX-S forward pass in eager PyTorch launches 451
+  kernels and keeps the GPU busy only a third of the time
+  ([`eager_profile_yolox_s.json`](bench/results/eager_profile_yolox_s.json)). The TensorRT
+  engine computes the same thing in 0.57 ms (trtexec), and the FP16 engine costs 0.01 mAP.
+- **M1 → CUDA graph: 1.6x.** Nsight showed `enqueueV3` spending 1.6 ms median of CPU per frame
+  issuing ~160 launches through WSL's driver. Replaying a captured graph made the inference
+  stage 0.59 ms, matching trtexec, with identical detections.
+- **→ M2 (frames stay on the GPU): 2.1x.** NVDEC decodes into GPU memory, one fused kernel turns
+  NV12 into the FP16 input tensor (letterbox, colour conversion, layout) in ~0.03 ms instead of
+  1.6 ms on the CPU, and NMS runs on the GPU. Only ~2.4 KB of detections cross PCIe per frame.
+  CPU time drops from 49.6 ms/frame (M0, all threads) to about 1.
+- **→ pipelined: 1.4x more throughput** by decoding frame n+1 while the GPU runs frame n, at the
+  cost of ~0.75 ms more latency per frame. Throughput is now capped by NVDEC (~1.1 ms per
+  1080p frame through FFmpeg).
+
+Correctness: every variant's detections are compared frame by frame against the M0 baseline
+([`compare_*.json`](bench/results)). M1 matches on 99.98-100% of boxes. M2 matches on 99.8%
+(mean IoU 0.993): its kernel uses the exact BT.709 conversion, while OpenCV's fast path
+rounds about one level dark. The preprocessing kernel and GPU NMS are bit-identical to the
+C++ reference in the tests ([`tests/test_gpu_kernels.py`](tests/test_gpu_kernels.py)).
+
+### Every model and precision on the M2 pipeline
+
+<!-- m2:begin -->
+| Model | Precision | mAP (TensorRT) | M2 sync latency mean / p99 | M2 sync fps | M2 pipelined fps | GPU time per frame | vs M0 (fps) |
+|---|---|---|---|---|---|---|---|
+| YOLOX-S | fp32 | 40.26 | 3.13 / 4.35 ms | 317 | 480 | 1.98 ms | 6.6x |
+| YOLOX-S | tf32 | 40.26 | 2.86 / 4.01 ms | 346 | 583 | 1.62 ms | 8.0x |
+| YOLOX-S | fp16 | 40.25 | 1.80 / 2.93 ms | 548 | 775 | 0.77 ms | 10.6x |
+| YOLOX-M | fp32 | 46.63 | 5.32 / 6.50 ms | 187 | 244 | 4.06 ms | 4.0x |
+| YOLOX-M | tf32 | 46.63 | 5.07 / 6.36 ms | 196 | 258 | 3.63 ms | 4.2x |
+| YOLOX-M | fp16 | 46.63 | 2.74 / 3.95 ms | 361 | 645 | 1.43 ms | 10.5x |
+<!-- m2:end -->
 
 ### Accuracy per precision
 
@@ -70,7 +99,7 @@ pipeline gives 40.45 for YOLOX-S, so the small gap is the threshold, not the pip
 |---|---|---|
 | M0 Baseline | Toolchain verified on Blackwell; naive PyTorch pipeline with per-stage timing; baseline COCO mAP | done |
 | M1 TensorRT FP16 | ONNX export, FP16 engine, C++ inference app, mAP matches baseline | done |
-| M2 GPU pipeline | NVDEC decode, fused preprocessing kernel, GPU NMS, streams and pinned memory, Nsight timeline | |
+| M2 GPU pipeline | NVDEC decode, fused preprocessing kernel, GPU NMS, streams and pinned memory, Nsight timeline | done |
 | M3 INT8 + multi-stream | INT8 (explicit Q/DQ), mAP per precision, multi-stream scaling curve | |
 | M4 Ship | Demo video, accuracy-vs-latency plot, write-up | |
 
