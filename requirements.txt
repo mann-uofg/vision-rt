@@ -9,6 +9,7 @@ opencv-python-headless==5.0.0.93
 pycocotools==2.0.11
 onnx==1.23.2
 onnxscript==0.7.2
+matplotlib==3.10.7
 # needed by the upstream YOLOX package on import
 loguru==0.7.3
 psutil==7.2.2

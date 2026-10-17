@@ -46,44 +46,101 @@ def fmt(v: float | None, spec: str = ".1f") -> str:
     return "—" if v is None else format(v, spec)
 
 
-def latency_table() -> str:
-    runs = []
-    for model in MODELS:
-        base = RESULTS / f"baseline_{model}_fp32-tf32_{CLIP}.json"
-        if base.exists():
-            runs.append(("PyTorch eager (M0)", json.loads(base.read_text())))
-        for prec in PRECISIONS:
-            p = RESULTS / f"cpp_sync_{model}_{prec}_{CLIP}.json"
-            if p.exists():
-                runs.append(("C++ + TensorRT (M1)", json.loads(p.read_text())))
+STEPS = [
+    # (results file prefix, label)
+    ("baseline", "M0: PyTorch eager, CPU decode/pre/NMS"),
+    ("cpp_sync", "M1: C++ + TensorRT, CPU decode/pre/NMS"),
+    ("cpp_sync_graph", "M1 + CUDA graph for the engine"),
+    ("gpu_sync", "M2: NVDEC + GPU pre/NMS, one frame at a time"),
+    ("gpu_pipelined", "M2, decode overlapped with GPU work"),
+]
 
-    base_mean = {r["model"]: r["host_ms"]["e2e"]["mean"]
-                 for name, r in runs if name.startswith("PyTorch")}
-    rows = [
-        "| Model | Pipeline | Precision | decode | preprocess | H2D + infer + D2H | NMS "
-        "| **end-to-end mean / p50 / p99** | throughput | vs M0 |",
-        "|---|---|---|---|---|---|---|---|---|---|",
-    ]
-    for name, r in runs:
-        h = r["host_ms"]
-        e = h["e2e"]
-        speedup = base_mean[r["model"]] / e["mean"] if r["model"] in base_mean else None
-        rows.append(
-            f"| {pretty(r['model'])} | {name} | {r['precision']} "
-            f"| {h['decode']['mean']:.2f} | {h['preprocess']['mean']:.2f} | {h['gpu']['mean']:.2f} "
-            f"| {h['postprocess']['mean']:.2f} "
-            f"| **{e['mean']:.2f} / {e['p50']:.2f} / {e['p99']:.2f}** "
-            f"| {r['throughput_fps']:.0f} fps | {fmt(speedup, '.2f')}x |"
-        )
-    v = runs[0][1]["video"]
-    rows += [
-        "",
-        f"Stage columns are mean ms per frame, host wall-clock; they add up to end-to-end. "
-        f"Clip `{v['file']}`, {v['width']}x{v['height']} {v['codec']}, "
-        f"{runs[0][1]['timed_frames']} timed frames after "
-        f"{runs[0][1]['warmup_frames']} warm-up; batch 1, one stream.",
-    ]
+
+def load_run(prefix: str, model: str, precision: str) -> dict | None:
+    name = f"{prefix}_{model}_{'fp32-tf32' if prefix == 'baseline' else precision}_{CLIP}.json"
+    p = RESULTS / name
+    return json.loads(p.read_text()) if p.exists() else None
+
+
+def stages(r: dict) -> dict:
+    """Per-stage mean ms, whichever pipeline produced the file."""
+    h, g = r["host_ms"], r["gpu_ms"]
+    if r["pipeline"] == "gpu-nvdec":
+        return {
+            "decode": h["decode"]["mean"], "preprocess": g["preprocess"]["mean"],
+            "infer": g["infer"]["mean"], "nms": g["postprocess"]["mean"],
+            "copies": g["d2h"]["mean"], "latency": h["latency"],
+        }
+    return {
+        "decode": h["decode"]["mean"], "preprocess": h["preprocess"]["mean"],
+        "infer": g["infer"]["mean"], "nms": h["postprocess"]["mean"],
+        "copies": g["h2d"]["mean"] + g["d2h"]["mean"], "latency": h["e2e"],
+    }
+
+
+def step_row(label: str, r: dict, base: dict | None) -> str:
+    s = stages(r)
+    lat = s["latency"]
+    gain = r["throughput_fps"] / base["throughput_fps"] if base else None
+    cpu = r.get("cpu_ms_per_frame")
+    return (
+        f"| {label} | {r['precision']} | {s['decode']:.2f} | {s['preprocess']:.2f} "
+        f"| {s['infer']:.2f} | {s['nms']:.2f} | {s['copies']:.2f} "
+        f"| **{lat['mean']:.2f}** / {lat['p50']:.2f} / {lat['p99']:.2f} "
+        f"| **{r['throughput_fps']:.0f}** | {fmt(gain, '.1f')}x | {fmt(cpu, '.1f')} |"
+    )
+
+
+HEADER = [
+    "| Pipeline | Precision | decode | preprocess | inference | NMS | copies "
+    "| **latency** mean / p50 / p99 | **fps** | vs M0 | CPU ms/frame |",
+    "|---|---|---|---|---|---|---|---|---|---|---|",
+]
+
+
+def journey_table(model: str = "yolox_s", precision: str = "fp16") -> str:
+    base = load_run("baseline", model, precision)
+    rows = list(HEADER)
+    for prefix, label in STEPS:
+        r = load_run(prefix, model, precision)
+        if r:
+            rows.append(step_row(label, r, base))
+    v = (base or {}).get("video", {})
+    rows += ["", NOTE.format(file=v.get("file", "?"), w=v.get("width"), h=v.get("height"),
+                             n=(base or {}).get("timed_frames"))]
     return "\n".join(rows)
+
+
+def m2_table() -> str:
+    rows = [
+        "| Model | Precision | mAP (TensorRT) | M2 sync latency mean / p99 | M2 sync fps "
+        "| M2 pipelined fps | GPU time per frame | vs M0 (fps) |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for model in MODELS:
+        base = load_run("baseline", model, "")
+        for prec in PRECISIONS:
+            s, pl = load_run("gpu_sync", model, prec), load_run("gpu_pipelined", model, prec)
+            if not (s and pl):
+                continue
+            gain = pl["throughput_fps"] / base["throughput_fps"] if base else None
+            rows.append(
+                f"| {pretty(model)} | {prec} | {fmt(coco_ap(model, 'tensorrt', prec), '.2f')} "
+                f"| {s['host_ms']['latency']['mean']:.2f} / {s['host_ms']['latency']['p99']:.2f} ms "
+                f"| {s['throughput_fps']:.0f} | {pl['throughput_fps']:.0f} "
+                f"| {s['gpu_ms']['total']['mean']:.2f} ms | {fmt(gain, '.1f')}x |"
+            )
+    return "\n".join(rows)
+
+
+NOTE = (
+    "Mean ms per frame on `{file}` ({w}x{h} H.264), batch 1, one stream, {n} timed frames after "
+    "100 warm-up. CPU stages are host wall-clock; GPU stages (inference everywhere, and "
+    "preprocess/NMS/copies in M2) are CUDA event times. Latency is from asking for a frame to "
+    "having its detections in host memory. In the pipelined run stages overlap, so they don't "
+    "add up to latency, and latency includes waiting behind the next frame's decode. CPU ms/frame "
+    "is process CPU time (all threads) over the timed frames."
+)
 
 
 def accuracy_table() -> str:
@@ -120,7 +177,8 @@ def splice(text: str, name: str, body: str) -> str:
 
 def main() -> None:
     text = README.read_text()
-    text = splice(text, "latency", latency_table())
+    text = splice(text, "latency", journey_table())
+    text = splice(text, "m2", m2_table())
     text = splice(text, "accuracy", accuracy_table())
     README.write_text(text)
     print("README tables updated")
