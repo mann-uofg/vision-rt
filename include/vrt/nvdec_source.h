@@ -46,6 +46,14 @@ class GpuFrame {
 //
 // FFmpeg shares the CUDA runtime's primary context, and its copy out of the decoder is
 // issued on `stream`. Work queued on the same stream afterwards is ordered behind it.
+//
+// Threads: separate NvdecSources can be driven from separate threads (tested under ASAN with 16
+// concurrent decoders), but each one, and the GpuFrames it returns, should stay on the thread
+// that owns it. send()/receive() expose the two halves of read(); note that FFmpeg's nvdec path
+// decodes synchronously inside send(), so one thread can't overlap many decoders this way.
+//
+// VRT_DECODER=cuvid switches to FFmpeg's <codec>_cuvid decoder (NVIDIA's parser and its own
+// surface queue): ~30% faster per frame here, but not what the reported results used.
 class NvdecSource {
  public:
   // in_flight: frames the caller may hold at once; the decoder's surface pool grows by this.
@@ -54,8 +62,17 @@ class NvdecSource {
   NvdecSource(const NvdecSource&) = delete;
   NvdecSource& operator=(const NvdecSource&) = delete;
 
-  // Next frame, or false at end of stream.
+  // Next frame, or false at end of stream. Equivalent to receive(), with send() as needed.
   bool read(GpuFrame& out);
+
+  // Feed the next packet to the decoder; NVDEC starts on it asynchronously. False once the
+  // input is exhausted and the decoder has been told to flush.
+  bool send();
+
+  enum class Recv { kFrame, kNeedInput, kEnd };
+  // A decoded frame if one is ready (waits for NVDEC to finish it), kNeedInput if the decoder
+  // needs another send() first, kEnd once it is fully drained.
+  Recv receive(GpuFrame& out);
   const VideoInfo& info() const { return info_; }
 
  private:

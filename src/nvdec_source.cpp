@@ -2,6 +2,7 @@
 
 #include <cuda.h>
 
+#include <cstdlib>
 #include <stdexcept>
 #include <utility>
 
@@ -81,6 +82,7 @@ struct NvdecSource::Impl {
   AVPacket* pkt = nullptr;
   int stream = -1;
   bool draining = false;
+  bool pending = false;  // pkt holds a packet the decoder refused (EAGAIN)
 
   ~Impl() {
     av_packet_free(&pkt);
@@ -114,6 +116,15 @@ NvdecSource::NvdecSource(const std::string& path, cudaStream_t stream, int in_fl
   check(s.stream, "no video stream in " + path);
   const AVStream* st = s.fmt->streams[s.stream];
 
+  // VRT_DECODER=cuvid uses FFmpeg's <codec>_cuvid decoder (NVIDIA's parser and its own surface
+  // queue) instead of the native decoder with the nvdec hwaccel.
+  if (const char* which = std::getenv("VRT_DECODER"); which && std::string(which) == "cuvid") {
+    const AVCodec* cuvid =
+        avcodec_find_decoder_by_name((std::string(codec->name) + "_cuvid").c_str());
+    if (!cuvid) throw std::runtime_error(std::string("no ") + codec->name + "_cuvid decoder");
+    codec = cuvid;
+  }
+
   s.dec = avcodec_alloc_context3(codec);
   if (!s.dec) throw std::runtime_error("avcodec_alloc_context3 failed");
   check(avcodec_parameters_to_context(s.dec, st->codecpar), "codec parameters");
@@ -137,30 +148,45 @@ NvdecSource::NvdecSource(const std::string& path, cudaStream_t stream, int in_fl
 
 NvdecSource::~NvdecSource() = default;
 
-bool NvdecSource::read(GpuFrame& out) {
+bool NvdecSource::send() {
+  Impl& s = *impl_;
+  if (s.draining) return false;
+  while (true) {
+    if (!s.pending) {
+      const int rd = av_read_frame(s.fmt, s.pkt);
+      if (rd == AVERROR_EOF) {
+        s.draining = true;
+        check(avcodec_send_packet(s.dec, nullptr), "flush decoder");
+        return true;
+      }
+      check(rd, "av_read_frame");
+      if (s.pkt->stream_index != s.stream) {
+        av_packet_unref(s.pkt);
+        continue;
+      }
+    }
+    const int r = avcodec_send_packet(s.dec, s.pkt);
+    if (r == AVERROR(EAGAIN)) {
+      s.pending = true;  // decoder full: keep the packet, the caller must receive() first
+      return true;
+    }
+    check(r, "send packet");
+    s.pending = false;
+    av_packet_unref(s.pkt);
+    return true;
+  }
+}
+
+NvdecSource::Recv NvdecSource::receive(GpuFrame& out) {
   Impl& s = *impl_;
   AVFrame* frame = av_frame_alloc();
   if (!frame) throw std::runtime_error("av_frame_alloc failed");
-  while (true) {
-    const int r = avcodec_receive_frame(s.dec, frame);
-    if (r == 0) break;
-    if (r == AVERROR_EOF || (r == AVERROR(EAGAIN) && s.draining)) {
-      av_frame_free(&frame);
-      return false;
-    }
-    if (r != AVERROR(EAGAIN)) {
-      av_frame_free(&frame);
-      check(r, "avcodec_receive_frame");
-    }
-    const int rd = av_read_frame(s.fmt, s.pkt);
-    if (rd == AVERROR_EOF) {
-      s.draining = true;
-      check(avcodec_send_packet(s.dec, nullptr), "flush decoder");
-      continue;
-    }
-    check(rd, "av_read_frame");
-    if (s.pkt->stream_index == s.stream) check(avcodec_send_packet(s.dec, s.pkt), "send packet");
-    av_packet_unref(s.pkt);
+  const int r = avcodec_receive_frame(s.dec, frame);
+  if (r != 0) {
+    av_frame_free(&frame);
+    if (r == AVERROR(EAGAIN)) return s.draining ? Recv::kEnd : Recv::kNeedInput;
+    if (r == AVERROR_EOF) return Recv::kEnd;
+    check(r, "avcodec_receive_frame");
   }
 
   if (frame->format != AV_PIX_FMT_CUDA) {
@@ -184,7 +210,21 @@ bool NvdecSource::read(GpuFrame& out) {
   out.height = frame->height;
   out.matrix = matrix_for(frame);
   out.full_range = frame->color_range == AVCOL_RANGE_JPEG;
-  return true;
+  return Recv::kFrame;
+}
+
+bool NvdecSource::read(GpuFrame& out) {
+  while (true) {
+    switch (receive(out)) {
+      case Recv::kFrame:
+        return true;
+      case Recv::kEnd:
+        return false;
+      case Recv::kNeedInput:
+        send();
+        break;
+    }
+  }
 }
 
 }  // namespace vrt
