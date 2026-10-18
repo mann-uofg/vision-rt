@@ -38,10 +38,16 @@ def main() -> None:
     img_dir.mkdir(parents=True, exist_ok=True)
     batch = np.empty((len(chosen), 3, *yolox.INPUT_HW), dtype=np.float32)
     for i, info in enumerate(chosen):
-        path = img_dir / info["file_name"]
+        name = info["file_name"]
+        if Path(name).name != name or not name.endswith(".jpg"):
+            raise SystemExit(f"unexpected file name in the annotations: {name!r}")
+        path = img_dir / name
         if not path.exists():
-            urllib.request.urlretrieve(f"http://images.cocodataset.org/train2017/{info['file_name']}",
-                                       path)
+            # Plain HTTP is the only way this server works (see scripts/fetch_coco.sh). These
+            # images only feed calibration statistics; a half-written file must not be cached.
+            part = path.with_suffix(".part")
+            urllib.request.urlretrieve(f"http://images.cocodataset.org/train2017/{name}", part)
+            part.rename(path)
         bgr = cv2.imread(str(path))
         if bgr is None:
             raise SystemExit(f"cannot read {path}")
