@@ -3,7 +3,7 @@
 //   vrt_multistream --engine models/yolox_s_fp16.engine --streams 8
 //                   --videos data/footage/barn004.mp4,data/footage/barn007.mp4,...
 //                   [--mode pipelined|sync] [--fps 0] [--warmup 100] [--frames 1000]
-//                   [--json out.json]
+//                   [--json out.json] [--show]
 //
 // Each stream is one worker thread with its own NVDEC decoder, CUDA stream, TensorRT execution
 // context and buffers (the M2 GpuPipeline). The engine itself is loaded once and shared.
@@ -16,6 +16,11 @@
 // streams release a frame at the same instant and the GPU sees N-frame bursts.
 //
 // While the timed frames run, NVML samples GPU and decoder (NVDEC) utilisation.
+//
+// --show is the live demo (bench/live_demo.sh): the clips loop, each camera's detections and a
+// 640x360 copy of its frame are streamed on stdout to tools/live_view.py (see live_feed.h), and
+// the run lasts until the viewer is closed (or --frames, if given). The summary then goes to
+// stderr. Without --show the camera loop does exactly what it did before.
 
 #include <algorithm>
 #include <atomic>
@@ -27,6 +32,7 @@
 #include <thread>
 
 #include "args.h"
+#include "live_feed.h"
 #include "vrt/cuda_check.h"
 #include "vrt/gpu_pipeline.h"
 #include "vrt/nvdec_source.h"
@@ -56,6 +62,7 @@ struct Config {
   double fps;
   long long warmup, frames;
   float conf, nms;
+  bool show;
 };
 
 struct Stream {
@@ -66,14 +73,16 @@ struct Stream {
   std::vector<double> latency;
   clock_type::time_point timed_begin, timed_end;
   long long timed = 0;
+  long long done = 0;  // frames finished, warm-up included
   std::string error;
 };
 
 // One camera's loop; same structure as vrt_pipeline, plus optional pacing.
-// `warm` counts streams that are past warm-up, or have failed: main waits for all of them
-// before it starts sampling, so a stream that dies early must still be counted.
-void run_stream(Stream& s, const Config& c, double phase, std::latch& start,
-                std::atomic<int>& warm) {
+// `warm` counts streams that are past warm-up, or have ended: main waits for all of them
+// before it starts sampling, so a stream that stops early must still be counted.
+// `feed` is null unless --show.
+void run_stream(Stream& s, int cam, const Config& c, double phase, std::latch& start,
+                std::atomic<int>& warm, vrt::LiveFeed* feed) {
   bool counted = false;
   try {
     vrt::GpuFrame frames[vrt::GpuPipeline::kSlots];
@@ -83,9 +92,13 @@ void run_stream(Stream& s, const Config& c, double phase, std::latch& start,
     const auto t_start = clock_type::now();
 
     auto finish = [&](int slot) {
-      s.pipe->collect(slot, nullptr);
+      const vrt::Detections dets = s.pipe->collect(slot, nullptr);
       const auto now = clock_type::now();
+      if (feed)
+        feed->publish(cam, slot, index[slot], ms_between(released[slot], now), dets, now,
+                      index[slot] >= c.warmup);
       frames[slot].release();
+      ++s.done;
       if (index[slot] < c.warmup) return;
       s.latency.push_back(ms_between(released[slot], now));
       s.timed_end = now;
@@ -93,7 +106,8 @@ void run_stream(Stream& s, const Config& c, double phase, std::latch& start,
     };
 
     int pending = -1;
-    for (long long i = 0; i < c.warmup + c.frames; ++i) {
+    for (long long i = 0; c.frames < 0 || i < c.warmup + c.frames; ++i) {
+      if (feed && feed->closed()) break;
       const int slot = static_cast<int>(i % vrt::GpuPipeline::kSlots);
       auto release = clock_type::now();
       if (c.fps > 0) {
@@ -107,10 +121,15 @@ void run_stream(Stream& s, const Config& c, double phase, std::latch& start,
         warm.fetch_add(1);
         counted = true;
       }
-      if (!s.src->read(frames[slot])) throw std::runtime_error("video ended: " + s.video);
+      if (!s.src->read(frames[slot])) {
+        if (!feed) throw std::runtime_error("video ended: " + s.video);
+        s.src->rewind();  // the live demo loops its clips
+        if (!s.src->read(frames[slot])) throw std::runtime_error("cannot loop: " + s.video);
+      }
       released[slot] = release;
       index[slot] = i;
       s.pipe->submit(frames[slot], slot, c.conf, c.nms);
+      if (feed) feed->queue(cam, slot, frames[slot], *s.cuda);
       if (c.mode == "sync") {
         finish(slot);
       } else {
@@ -121,17 +140,22 @@ void run_stream(Stream& s, const Config& c, double phase, std::latch& start,
     if (pending >= 0) finish(pending);
   } catch (const std::exception& e) {
     s.error = e.what();
-    if (!counted) warm.fetch_add(1);
   }
+  if (!counted) warm.fetch_add(1);
 }
 
 int run(const vrt::Args& args) {
   const std::string engine_path = args.required("engine");
   const std::vector<std::string> videos = split(args.required("videos"), ',');
   const int n = static_cast<int>(args.integer("streams", 1));
-  Config c{args.str("mode", "pipelined"),       args.real("fps", 0.f),
-           args.integer("warmup", 100),         args.integer("frames", 1000),
-           args.real("conf", vrt::kDeployConf), args.real("nms", vrt::kDeployNmsIou)};
+  const bool show = args.has("show");
+  Config c{args.str("mode", "pipelined"),
+           args.real("fps", 0.f),
+           args.integer("warmup", 100),
+           args.integer("frames", show ? -1 : 1000),  // --show: until the viewer is closed
+           args.real("conf", vrt::kDeployConf),
+           args.real("nms", vrt::kDeployNmsIou),
+           show};
   if (c.mode != "pipelined" && c.mode != "sync") throw std::invalid_argument("--mode");
   if (videos.empty() || n < 1) throw std::invalid_argument("need --videos and --streams >= 1");
 
@@ -147,6 +171,14 @@ int run(const vrt::Args& args) {
     // Capture every graph now, while no other thread is using the GPU.
     s.pipe->prepare(s.src->info().width, s.src->info().height, c.conf, c.nms);
   }
+  std::unique_ptr<vrt::LiveFeed> feed;
+  std::thread writer;
+  if (c.show) {
+    std::vector<std::pair<int, int>> sizes;
+    for (const auto& s : streams) sizes.emplace_back(s.src->info().width, s.src->info().height);
+    feed = std::make_unique<vrt::LiveFeed>(sizes);
+    writer = std::thread([&feed] { feed->run(); });
+  }
 
   vrt::UtilSampler sampler;
   std::latch start(n + 1);
@@ -154,8 +186,8 @@ int run(const vrt::Args& args) {
   std::vector<std::thread> threads;
   for (int k = 0; k < n; ++k) {
     const double phase = static_cast<double>(k) / n;  // fraction of a frame interval
-    threads.emplace_back(run_stream, std::ref(streams[static_cast<std::size_t>(k)]), std::cref(c),
-                         phase, std::ref(start), std::ref(warm));
+    threads.emplace_back(run_stream, std::ref(streams[static_cast<std::size_t>(k)]), k,
+                         std::cref(c), phase, std::ref(start), std::ref(warm), feed.get());
   }
   const double cpu0 = vrt::process_cpu_ms();
   start.arrive_and_wait();
@@ -164,12 +196,23 @@ int run(const vrt::Args& args) {
   for (auto& t : threads) t.join();
   sampler.stop();
   const double cpu1 = vrt::process_cpu_ms();
+  if (feed) {
+    feed->stop();
+    writer.join();
+  }
+  // With --show stdout carries the frames, so the summary goes to stderr.
+  FILE* const report = c.show ? stderr : stdout;
 
   std::vector<double> all, per_stream_fps, per_stream_p99;
   clock_type::time_point begin = clock_type::time_point::max(), end{};
-  long long total = 0;
+  long long total = 0, done = 0;
   for (const auto& s : streams) {
     if (!s.error.empty()) throw std::runtime_error("stream on " + s.video + ": " + s.error);
+    if (s.timed < 2) {  // only possible with --show, closed during warm-up
+      std::fprintf(report, "stopped before the timed frames; no summary\n");
+      return 0;
+    }
+    done += s.done;
     all.insert(all.end(), s.latency.begin(), s.latency.end());
     per_stream_fps.push_back(1000.0 * static_cast<double>(s.timed) /
                              ms_between(s.timed_begin, s.timed_end));
@@ -190,19 +233,21 @@ int run(const vrt::Args& args) {
   j.begin_object().field("pipeline", "gpu-nvdec-multistream").field("engine", ename);
   j.field("mode", c.mode).field("streams", n).field("fps_per_stream_limit", c.fps);
   j.field("phase_staggered", c.fps > 0);
-  j.field("warmup_frames", c.warmup).field("timed_frames_per_stream", c.frames);
+  j.field("show", c.show).field("warmup_frames", c.warmup);
+  j.field("timed_frames_per_stream", total / n);
   j.field("aggregate_fps", agg_fps).field("per_stream_fps", sfps);
   j.field("latency_ms", lat).field("worst_stream_p99_ms", worst_p99);
   j.field("gpu_util_pct", sampler.gpu_mean()).field("decoder_util_pct", sampler.decoder_mean());
   // Process CPU time over every frame of the run, warm-up included.
-  j.field("cpu_ms_per_frame", (cpu1 - cpu0) / static_cast<double>(n * (c.warmup + c.frames)));
+  j.field("cpu_ms_per_frame", (cpu1 - cpu0) / static_cast<double>(done));
   j.field("videos", static_cast<int>(videos.size()));
   j.begin_object("environment");
   vrt::write_environment(j);
   j.end_object().end_object();
   if (args.has("json")) std::ofstream(args.str("json")) << j.str();
 
-  std::printf(
+  std::fprintf(
+      report,
       "%2d streams (%s, fps limit %g): %7.1f fps total, %6.1f per stream (min %.1f), latency p50 "
       "%.2f p99 %.2f worst-stream p99 %.2f ms, GPU %.0f%%, NVDEC %.0f%%\n",
       n, c.mode.c_str(), c.fps, agg_fps, sfps.mean,
