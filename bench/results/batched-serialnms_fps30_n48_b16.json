@@ -1,0 +1,57 @@
+{
+  "pipeline": "gpu-nvdec-batched",
+  "engines": "models/yolox_s_fp16.engine,models/yolox_s_fp16_b2.engine,models/yolox_s_fp16_b4.engine,models/yolox_s_fp16_b8.engine,models/yolox_s_fp16_b16.engine",
+  "streams": 48,
+  "max_batch": 16,
+  "fps_per_stream_limit": 30,
+  "phase_staggered": true,
+  "mode": "sync per batch, dynamic batching",
+  "warmup_frames": 60,
+  "timed_frames_per_stream": 600,
+  "aggregate_fps": 1162.42,
+  "per_stream_fps": 24.2171,
+  "latency_ms": {
+    "n": 28800,
+    "mean": 3020.84,
+    "p50": 3022.63,
+    "p90": 4610.57,
+    "p99": 5179.13,
+    "max": 5400.5
+  },
+  "worst_stream_p99_ms": 5389.25,
+  "batch_size": {
+    "n": 2317,
+    "mean": 13.6729,
+    "p50": 16,
+    "p90": 16,
+    "p99": 16,
+    "max": 16
+  },
+  "batch_infer_ms": {
+    "n": 2317,
+    "mean": 5.14356,
+    "p50": 5.90243,
+    "p90": 6.00328,
+    "p99": 6.23192,
+    "max": 7.07558
+  },
+  "batch_gpu_total_ms": {
+    "n": 2317,
+    "mean": 10.5863,
+    "p50": 12.1588,
+    "p90": 12.8129,
+    "p99": 13.3528,
+    "max": 26.9481
+  },
+  "gpu_util_pct": 56.0019,
+  "decoder_util_pct": 47.5649,
+  "cpu_ms_per_frame": 1.61936,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}
