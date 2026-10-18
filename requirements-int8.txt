@@ -1,0 +1,5 @@
+# INT8 quantization (tools/quantize_int8.py, tools/make_calib.py) and the NMS-layer comparison.
+# Kept apart from requirements.txt: these are large and CI doesn't need them.
+nvidia-modelopt[onnx]==0.47.0
+onnxruntime-gpu==1.24.4
+onnxconverter-common==1.16.0
