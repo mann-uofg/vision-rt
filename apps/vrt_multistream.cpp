@@ -144,6 +144,8 @@ int run(const vrt::Args& args) {
     s.cuda = std::make_unique<vrt::CudaStream>();
     s.pipe = std::make_unique<vrt::GpuPipeline>(model, *s.cuda);
     s.src = std::make_unique<vrt::NvdecSource>(s.video, *s.cuda, vrt::GpuPipeline::kSlots);
+    // Capture every graph now, while no other thread is using the GPU.
+    s.pipe->prepare(s.src->info().width, s.src->info().height, c.conf, c.nms);
   }
 
   vrt::UtilSampler sampler;

@@ -42,6 +42,12 @@ class GpuPipeline {
   GpuPipeline(const GpuPipeline&) = delete;
   GpuPipeline& operator=(const GpuPipeline&) = delete;
 
+  // Build everything that depends on the frame size and thresholds (letterbox tap tables, the
+  // NMS CUDA graph) now, instead of on the first frame. Call it before starting other threads
+  // that use the GPU: capturing a graph while another thread does something that synchronises
+  // the device invalidates the capture.
+  void prepare(int frame_w, int frame_h, float conf_thresh, float iou_thresh);
+
   // Queue all GPU work for `frame`; results will land in `slot`. The frame must stay alive
   // until collect(slot) returns.
   void submit(const GpuFrame& frame, int slot, float conf_thresh, float iou_thresh);
@@ -63,6 +69,7 @@ class GpuPipeline {
   // for a given video and thresholds, so it is captured into a CUDA graph on first use and
   // recaptured only if the scale or thresholds change.
   void run_postprocess(float scale, float conf_thresh, float iou_thresh);
+  void ensure_post_graph(float scale, float conf_thresh, float iou_thresh);
 
   struct Slot {
     void* host = nullptr;    // pinned GpuDetections block

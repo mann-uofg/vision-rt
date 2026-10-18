@@ -69,6 +69,7 @@ int run(const vrt::Args& args) {
   vrt::GpuPipeline pipe(engine_path, stream, max_det);
   vrt::NvdecSource video(video_path, stream, vrt::GpuPipeline::kSlots);
   const vrt::VideoInfo& vi = video.info();
+  pipe.prepare(vi.width, vi.height, conf, nms);
 
   std::ofstream dets_csv;
   if (args.has("dets")) {

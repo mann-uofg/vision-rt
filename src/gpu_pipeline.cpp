@@ -87,7 +87,18 @@ void GpuPipeline::submit(const GpuFrame& frame, int slot, float conf_thresh, flo
   VRT_CUDA_CHECK(cudaEventRecord(s.ev[4], stream_));
 }
 
+void GpuPipeline::prepare(int frame_w, int frame_h, float conf_thresh, float iou_thresh) {
+  letterbox_ = std::make_unique<GpuLetterbox>(frame_w, frame_h, in_w_, in_h_);
+  ensure_post_graph(letterbox_->scale(), conf_thresh, iou_thresh);
+  VRT_CUDA_CHECK(cudaStreamSynchronize(stream_));
+}
+
 void GpuPipeline::run_postprocess(float scale, float conf_thresh, float iou_thresh) {
+  ensure_post_graph(scale, conf_thresh, iou_thresh);
+  VRT_CUDA_CHECK(cudaGraphLaunch(post_graph_, stream_));
+}
+
+void GpuPipeline::ensure_post_graph(float scale, float conf_thresh, float iou_thresh) {
   if (!post_graph_ || scale != graph_scale_ || conf_thresh != graph_conf_ ||
       iou_thresh != graph_iou_) {
     if (post_graph_) {
@@ -108,7 +119,6 @@ void GpuPipeline::run_postprocess(float scale, float conf_thresh, float iou_thre
     graph_conf_ = conf_thresh;
     graph_iou_ = iou_thresh;
   }
-  VRT_CUDA_CHECK(cudaGraphLaunch(post_graph_, stream_));
 }
 
 Detections GpuPipeline::collect(int slot, GpuStageTimes* times) {
