@@ -1,0 +1,26 @@
+{
+  "engine": "yolox_s_fp16_nms_c0.01_i0.65.engine",
+  "conf_thresh": 0.01,
+  "nms_iou": 0.65,
+  "images": 5000,
+  "images_identical": 4809,
+  "boxes_layer": 211649,
+  "boxes_mine": 222366,
+  "images_with_more_boxes_from_layer": 9,
+  "images_with_fewer_boxes_from_layer": 157,
+  "ap_layer": 0.40248385175585477,
+  "ap_mine": 0.40248427780003954,
+  "ap50_layer": 0.5890497570920986,
+  "ap50_mine": 0.5890503561613765,
+  "host_ms_engine_with_nms": {
+    "mean": 4.010617987555488,
+    "p50": 3.0964610000410175,
+    "p99": 8.007912969887911
+  },
+  "host_ms_engine_without_nms": {
+    "mean": 3.4682993554205237,
+    "p50": 2.66956850009592,
+    "p99": 7.244828230495841
+  },
+  "note": "host wall time per image (run + sync) from Python, same harness for both engines; the difference is what the NMS layer adds"
+}

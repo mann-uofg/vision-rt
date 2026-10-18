@@ -1,0 +1,96 @@
+{
+  "pipeline": "gpu-nvdec",
+  "mode": "sync",
+  "model": "yolox_m",
+  "precision": "int8fp32",
+  "engine": "yolox_m_int8fp32.engine",
+  "cuda_graph": true,
+  "batch": 1,
+  "streams": 1,
+  "conf_thresh": 0.3,
+  "nms_iou": 0.45,
+  "max_det": 100,
+  "video": {
+    "file": "barn022.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "frames": 1506,
+    "codec": "h264 (nvdec)",
+    "color_space": "bt709",
+    "color_range": "tv"
+  },
+  "warmup_frames": 100,
+  "timed_frames": 1406,
+  "throughput_fps": 361.456,
+  "cpu_ms_per_frame": 1.83429,
+  "host_ms": {
+    "decode": {
+      "n": 1406,
+      "mean": 1.11491,
+      "p50": 1.06255,
+      "p90": 1.24745,
+      "p99": 2.22148,
+      "max": 3.03184
+    },
+    "latency": {
+      "n": 1406,
+      "mean": 2.73921,
+      "p50": 2.69235,
+      "p90": 2.9109,
+      "p99": 3.84531,
+      "max": 6.6502
+    }
+  },
+  "gpu_ms": {
+    "preprocess": {
+      "n": 1406,
+      "mean": 0.0260193,
+      "p50": 0.013936,
+      "p90": 0.052336,
+      "p99": 0.149974,
+      "max": 0.23792
+    },
+    "infer": {
+      "n": 1406,
+      "mean": 1.28311,
+      "p50": 1.2501,
+      "p90": 1.43456,
+      "p99": 1.50414,
+      "max": 1.60362
+    },
+    "postprocess": {
+      "n": 1406,
+      "mean": 0.151265,
+      "p50": 0.142336,
+      "p90": 0.202944,
+      "p99": 0.260344,
+      "max": 0.393312
+    },
+    "d2h": {
+      "n": 1406,
+      "mean": 0.00728756,
+      "p50": 0.00368,
+      "p90": 0.007392,
+      "p99": 0.07724,
+      "max": 0.121152
+    },
+    "total": {
+      "n": 1406,
+      "mean": 1.46768,
+      "p50": 1.4343,
+      "p90": 1.60792,
+      "p99": 1.72488,
+      "max": 1.86925
+    }
+  },
+  "detections_per_frame": 6.31721,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}

@@ -1,0 +1,7 @@
+TensorRT version: 11.3.0
+Throughput: 399.847 qps
+Latency: min = 1.36523 ms, max = 7.33142 ms, mean = 2.48988 ms, median = 2.3324 ms, percentile(90%) = 3.83691 ms, percentile(95%) = 4.80371 ms, percentile(99%) = 6.44336 ms
+H2D Latency: min = 0 ms, max = 0 ms, mean = 0 ms, median = 0 ms, percentile(90%) = 0 ms, percentile(95%) = 0 ms, percentile(99%) = 0 ms
+GPU Compute Time: min = 1.36523 ms, max = 7.33142 ms, mean = 2.48988 ms, median = 2.3324 ms, percentile(90%) = 3.83691 ms, percentile(95%) = 4.80371 ms, percentile(99%) = 6.44336 ms
+D2H Latency: min = 0 ms, max = 0 ms, mean = 0 ms, median = 0 ms, percentile(90%) = 0 ms, percentile(95%) = 0 ms, percentile(99%) = 0 ms
+Total GPU Compute Time: 9.96203 s

@@ -1,0 +1,29 @@
+{
+  "question": "Why does YOLOX-M lose ~30 mAP under INT8 (Model Optimizer Q/DQ, entropy calibration, FP16 for non-quantized ops) on TensorRT 11.3, when YOLOX-S loses 0.6?",
+  "tensorrt": "11.3.0.99",
+  "gpu": "NVIDIA GeForce RTX 5070 Ti (sm_120)",
+  "images": "first N COCO val2017 images by id; AP = mAP@0.5:0.95",
+  "runs": [
+    {"variant": "fp16 engine (reference)", "images": 500, "ap": 0.5142},
+    {"variant": "int8, fp16 elsewhere (Model Optimizer)", "images": 500, "ap": 0.2103},
+    {"variant": "int8, fp16 elsewhere, head output convs not quantized", "images": 500, "ap": 0.2110},
+    {"variant": "int8, fp32 elsewhere", "images": 500, "ap": 0.5045, "engine_gpu_ms": 1.249},
+    {"variant": "int8, fp32 graph converted to fp16 with onnxconverter-common instead", "images": 500, "ap": 0.2051},
+    {"variant": "same, builderOptimizationLevel=1", "images": 300, "ap": 0.1990},
+    {"variant": "fp16 except compute nodes [0,182) in fp32", "images": 300, "ap": 0.5154},
+    {"variant": "fp16 except compute nodes [182,364) in fp32", "images": 300, "ap": 0.5164},
+    {"variant": "fp16 except nodes [0,91) in fp32", "images": 300, "ap": 0.3228},
+    {"variant": "fp16 except nodes [273,364) in fp32", "images": 300, "ap": 0.1993},
+    {"variant": "fp16 except single node 91 in fp32", "images": 300, "ap": 0.3234},
+    {"variant": "fp16 except single node 182 in fp32", "images": 300, "ap": 0.1979},
+    {"variant": "fp16 except single node 300 in fp32", "images": 300, "ap": 0.1991}
+  ],
+  "ruled_out": [
+    "my FP32-decode post-pass (raw Model Optimizer output scores the same)",
+    "Q/DQ scales stored in fp16 (max relative rounding error 0.26%, none flushed)",
+    "the head output convolutions (excluding them from INT8 changes nothing)",
+    "Model Optimizer's fp16 conversion (a different converter fails the same way)",
+    "a single bad tactic (a different builder optimisation level fails the same way)"
+  ],
+  "conclusion": "Fails only when the middle of the network (roughly compute nodes 91-273) is INT8+FP16 on both sides of node 182; any large FP32 region fixes it. Consistent with a TensorRT INT8+FP16 fusion problem rather than a numerical one. Not resolved; YOLOX-M ships as FP16, since INT8 with FP32 islands is accurate but no faster than FP16 (1.25 ms vs 1.25 ms in a 10 s trtexec run)."
+}

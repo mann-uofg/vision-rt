@@ -1,0 +1,40 @@
+{
+  "pipeline": "gpu-nvdec-multistream",
+  "engine": "yolox_s_fp16.engine",
+  "mode": "sync",
+  "streams": 32,
+  "fps_per_stream_limit": 30,
+  "phase_staggered": true,
+  "warmup_frames": 60,
+  "timed_frames_per_stream": 600,
+  "aggregate_fps": 959.924,
+  "per_stream_fps": {
+    "n": 32,
+    "mean": 30.0465,
+    "p50": 30.0465,
+    "p90": 30.0469,
+    "p99": 30.047,
+    "max": 30.0471
+  },
+  "latency_ms": {
+    "n": 19200,
+    "mean": 2.58972,
+    "p50": 2.48014,
+    "p90": 2.96396,
+    "p99": 4.59857,
+    "max": 72.4516
+  },
+  "worst_stream_p99_ms": 5.34605,
+  "gpu_util_pct": 69.6401,
+  "decoder_util_pct": 36.6632,
+  "cpu_ms_per_frame": 1.54018,
+  "videos": 6,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}

@@ -1,0 +1,13 @@
+Selected Device: NVIDIA GeForce RTX 5070 Ti
+Selected Device ID: 0
+Selected Device UUID: GPU-c3e92709-1abc-5fbf-8fa4-7384c82f4f0d
+Compute Capability: 12.0
+TensorRT version: 11.3.0
+[TRT] Total Activation Memory: 21326848 bytes
+Engine built in 19.3851 sec.
+Throughput: 1853.06 qps
+Latency: min = 0.501953 ms, max = 1.93274 ms, mean = 0.538069 ms, median = 0.504944 ms, percentile(90%) = 0.553711 ms, percentile(95%) = 0.73584 ms, percentile(99%) = 1.11279 ms
+H2D Latency: min = 0 ms, max = 0 ms, mean = 0 ms, median = 0 ms, percentile(90%) = 0 ms, percentile(95%) = 0 ms, percentile(99%) = 0 ms
+GPU Compute Time: min = 0.501953 ms, max = 1.93274 ms, mean = 0.538069 ms, median = 0.504944 ms, percentile(90%) = 0.553711 ms, percentile(95%) = 0.73584 ms, percentile(99%) = 1.11279 ms
+D2H Latency: min = 0 ms, max = 0 ms, mean = 0 ms, median = 0 ms, percentile(90%) = 0 ms, percentile(95%) = 0 ms, percentile(99%) = 0 ms
+Total GPU Compute Time: 9.97149 s

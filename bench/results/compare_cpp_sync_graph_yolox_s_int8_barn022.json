@@ -1,0 +1,15 @@
+{
+  "ref": "baseline_yolox_s_fp32-tf32_barn022.npz",
+  "test": "cpp_sync_graph_yolox_s_int8_barn022.csv",
+  "frames": 1406,
+  "ref_boxes": 9783,
+  "test_boxes": 10053,
+  "matched": 9732,
+  "recall_vs_ref": 0.994786875191659,
+  "precision_vs_ref": 0.9680692330647568,
+  "iou_thresh": 0.5,
+  "matched_iou_mean": 0.9579496823293302,
+  "matched_iou_p01": 0.7705368684680325,
+  "score_absdiff_mean": 0.015970595419619732,
+  "score_absdiff_max": 0.288881455871582
+}

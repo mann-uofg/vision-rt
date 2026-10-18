@@ -1,0 +1,102 @@
+{
+  "pipeline": "cpp-trt-sync-graph",
+  "cuda_graph": true,
+  "model": "yolox_s",
+  "precision": "int8",
+  "engine": "yolox_s_int8.engine",
+  "batch": 1,
+  "streams": 1,
+  "conf_thresh": 0.3,
+  "nms_iou": 0.45,
+  "video": {
+    "file": "barn022.mp4",
+    "width": 1920,
+    "height": 1080,
+    "fps": 30,
+    "frames": 1506,
+    "codec": "h264",
+    "color_space": "bt709",
+    "color_range": "tv"
+  },
+  "warmup_frames": 100,
+  "timed_frames": 1406,
+  "throughput_fps": 235.668,
+  "cpu_ms_per_frame": 8.18373,
+  "host_ms": {
+    "decode": {
+      "n": 1406,
+      "mean": 0.561013,
+      "p50": 0.536413,
+      "p90": 0.631812,
+      "p99": 0.950189,
+      "max": 1.14501
+    },
+    "preprocess": {
+      "n": 1406,
+      "mean": 1.89469,
+      "p50": 1.83969,
+      "p90": 2.09404,
+      "p99": 2.38244,
+      "max": 3.43279
+    },
+    "gpu": {
+      "n": 1406,
+      "mean": 1.41043,
+      "p50": 1.36733,
+      "p90": 1.64333,
+      "p99": 1.90265,
+      "max": 2.07298
+    },
+    "postprocess": {
+      "n": 1406,
+      "mean": 0.375582,
+      "p50": 0.354448,
+      "p90": 0.425343,
+      "p99": 0.613497,
+      "max": 4.05821
+    },
+    "e2e": {
+      "n": 1406,
+      "mean": 4.24326,
+      "p50": 4.16892,
+      "p90": 4.67702,
+      "p99": 5.02668,
+      "max": 7.7541
+    }
+  },
+  "gpu_ms": {
+    "h2d": {
+      "n": 1406,
+      "mean": 0.358154,
+      "p50": 0.344304,
+      "p90": 0.482416,
+      "p99": 0.615904,
+      "max": 0.860864
+    },
+    "infer": {
+      "n": 1406,
+      "mean": 0.600658,
+      "p50": 0.60448,
+      "p90": 0.6412,
+      "p99": 0.789733,
+      "max": 0.905216
+    },
+    "d2h": {
+      "n": 1406,
+      "mean": 0.311366,
+      "p50": 0.286704,
+      "p90": 0.381104,
+      "p99": 0.602122,
+      "max": 0.725248
+    }
+  },
+  "detections_per_frame": 7.15007,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}
