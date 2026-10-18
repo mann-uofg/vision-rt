@@ -1,0 +1,15 @@
+{
+  "ref": "gpu_sync_yolox_s_fp16_barn022.csv",
+  "test": "cam4.csv",
+  "frames": 1000,
+  "ref_boxes": 7194,
+  "test_boxes": 7194,
+  "matched": 7194,
+  "recall_vs_ref": 1.0,
+  "precision_vs_ref": 1.0,
+  "iou_thresh": 0.5,
+  "matched_iou_mean": 1.0,
+  "matched_iou_p01": 1.0,
+  "score_absdiff_mean": 0.0,
+  "score_absdiff_max": 0.0
+}

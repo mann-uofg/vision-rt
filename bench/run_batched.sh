@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Cross-camera batching sweep (apps/vrt_batched.cpp), YOLOX-S FP16 engines of batch 1-16.
-#   capacity:  N cameras unthrottled, for each max batch size
+#   capacity:  N cameras unthrottled, for each max batch size (two batches in flight)
 #   real time: N cameras at 30 fps (staggered), for the larger max batch sizes
+#   in flight 1: the 32-camera capacity runs again with --in-flight 1, to separate what
+#                batched NMS gained from what the second batch in flight gained
 # Compare with bench/run_multistream.sh, where every camera has its own batch-1 context.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -15,6 +17,7 @@ CAPACITY_N="${CAPACITY_N-16 32}"
 CAPACITY_B="${CAPACITY_B-1 2 4 8 16}"
 REALTIME_N="${REALTIME_N-32 40 48 56 64 72}"
 REALTIME_B="${REALTIME_B-8 16}"
+INFLIGHT1_B="${INFLIGHT1_B-1 2 4 8 16}"
 
 run() {  # run <streams> <max batch> <args...>; killed if it hangs
   timeout 900 build/release/vrt_batched --engines "$E" --videos "$VIDEOS" --streams "$1" \
@@ -33,19 +36,27 @@ for b in $REALTIME_B; do
       echo "real-time n=$n b=$b failed"
   done
 done
+for b in $INFLIGHT1_B; do
+  run 32 "$b" --in-flight 1 --frames 1000 --warmup 100 \
+    --json "$R/batched-inflight1_fps0_n32_b${b}.json" || echo "in-flight 1 b=$b failed"
+done
 
-# Correctness: one camera per clip, batches of up to 4, and the barn022 camera's detections
-# compared with the unbatched GPU path's (bench/run_pipelines.sh), which skips the warmup frames.
+# Correctness: one camera per clip, and the barn022 camera's detections compared with the
+# unbatched GPU path's (bench/run_pipelines.sh), which skips the warmup frames. Max batch 1 runs
+# the same batch-1 engine, so with the batched NMS it should match exactly; max batch 4 runs
+# other engines with their own FP16 tactics.
 D=$R/detections
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 clips=(data/footage/barn*.mp4)
-run "${#clips[@]}" 4 --frames 1000 --warmup 100 --dets-dir "$tmp" >/dev/null
 cam=0
 for v in "${clips[@]}"; do
   [ "$(basename "$v")" = barn022.mp4 ] && break
   cam=$((cam + 1))
 done
-python tools/compare_detections.py --ref "$D/gpu_sync_yolox_s_fp16_barn022.csv" \
-  --test "$tmp/cam$cam.csv" --min-frame 100 --max-frame 1100 \
-  --out "$R/compare_batched_b4_barn022.json"
+for b in 1 4; do
+  run "${#clips[@]}" "$b" --frames 1000 --warmup 100 --dets-dir "$tmp" >/dev/null
+  python tools/compare_detections.py --ref "$D/gpu_sync_yolox_s_fp16_barn022.csv" \
+    --test "$tmp/cam$cam.csv" --min-frame 100 --max-frame 1100 \
+    --out "$R/compare_batched_b${b}_barn022.json"
+done

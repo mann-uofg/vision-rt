@@ -1,0 +1,75 @@
+{
+  "pipeline": "gpu-nvdec-batched",
+  "engines": "models/yolox_s_fp16.engine,models/yolox_s_fp16_b2.engine,models/yolox_s_fp16_b4.engine,models/yolox_s_fp16_b8.engine,models/yolox_s_fp16_b16.engine",
+  "streams": 32,
+  "max_batch": 8,
+  "batches_in_flight": 1,
+  "nms": "batched",
+  "fps_per_stream_limit": 0,
+  "phase_staggered": false,
+  "decode_threads": 32,
+  "warmup_frames": 100,
+  "timed_frames_per_stream": 1000,
+  "aggregate_fps": 2302.95,
+  "per_stream_fps": 71.967,
+  "latency_ms": {
+    "n": 32000,
+    "mean": 26.0286,
+    "p50": 26.0742,
+    "p90": 27.9726,
+    "p99": 31.0472,
+    "max": 42.3143
+  },
+  "worst_stream_p99_ms": 31.9425,
+  "batch_size": {
+    "n": 4600,
+    "mean": 7.65217,
+    "p50": 8,
+    "p90": 8,
+    "p99": 8,
+    "max": 8
+  },
+  "batch_preprocess_ms": {
+    "n": 4600,
+    "mean": 0.305203,
+    "p50": 0.181552,
+    "p90": 0.705894,
+    "p99": 1.52542,
+    "max": 5.05955
+  },
+  "batch_infer_ms": {
+    "n": 4600,
+    "mean": 2.73301,
+    "p50": 2.76842,
+    "p90": 2.97996,
+    "p99": 3.18653,
+    "max": 9.0328
+  },
+  "batch_postprocess_ms": {
+    "n": 4600,
+    "mean": 0.116567,
+    "p50": 0.0952,
+    "p90": 0.103712,
+    "p99": 0.64151,
+    "max": 4.22534
+  },
+  "batch_gpu_total_ms": {
+    "n": 4600,
+    "mean": 3.15478,
+    "p50": 3.11478,
+    "p90": 3.69065,
+    "p99": 4.59559,
+    "max": 11.9853
+  },
+  "gpu_util_pct": 82.8664,
+  "decoder_util_pct": 82.9642,
+  "cpu_ms_per_frame": 1.41034,
+  "environment": {
+    "gpu": "NVIDIA GeForce RTX 5070 Ti",
+    "compute_capability": "12.0",
+    "cuda_runtime": "13.3",
+    "cuda_driver_api": "13.4",
+    "tensorrt": "11.3.0",
+    "ffmpeg": "n8.1.3-18-g46d899d7a0-20261016"
+  }
+}

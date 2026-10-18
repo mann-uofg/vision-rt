@@ -3,22 +3,24 @@
   "engines": "models/yolox_s_fp16.engine,models/yolox_s_fp16_b2.engine,models/yolox_s_fp16_b4.engine,models/yolox_s_fp16_b8.engine,models/yolox_s_fp16_b16.engine",
   "streams": 32,
   "max_batch": 1,
+  "batches_in_flight": 2,
+  "nms": "batched",
   "fps_per_stream_limit": 0,
   "phase_staggered": false,
   "decode_threads": 32,
   "warmup_frames": 100,
   "timed_frames_per_stream": 1000,
-  "aggregate_fps": 1096.37,
-  "per_stream_fps": 34.2615,
+  "aggregate_fps": 1126.7,
+  "per_stream_fps": 35.2094,
   "latency_ms": {
     "n": 32000,
-    "mean": 55.4219,
-    "p50": 55.7089,
-    "p90": 56.9378,
-    "p99": 58.3103,
-    "max": 60.4152
+    "mean": 53.7381,
+    "p50": 54.0768,
+    "p90": 55.1423,
+    "p99": 56.3041,
+    "max": 58.538
   },
-  "worst_stream_p99_ms": 58.5937,
+  "worst_stream_p99_ms": 56.6415,
   "batch_size": {
     "n": 35200,
     "mean": 1,
@@ -27,25 +29,41 @@
     "p99": 1,
     "max": 1
   },
+  "batch_preprocess_ms": {
+    "n": 35200,
+    "mean": 0.036207,
+    "p50": 0.017472,
+    "p90": 0.0736,
+    "p99": 0.205665,
+    "max": 5.99754
+  },
   "batch_infer_ms": {
     "n": 35200,
-    "mean": 0.601973,
-    "p50": 0.594848,
-    "p90": 0.633888,
-    "p99": 0.728545,
-    "max": 3.27917
+    "mean": 0.617696,
+    "p50": 0.594304,
+    "p90": 0.731171,
+    "p99": 0.829666,
+    "max": 2.51558
+  },
+  "batch_postprocess_ms": {
+    "n": 35200,
+    "mean": 0.147112,
+    "p50": 0.13904,
+    "p90": 0.175619,
+    "p99": 0.281187,
+    "max": 2.86842
   },
   "batch_gpu_total_ms": {
     "n": 35200,
-    "mean": 0.798972,
-    "p50": 0.779328,
-    "p90": 0.859747,
-    "p99": 1.04446,
-    "max": 8.87219
+    "mean": 0.801015,
+    "p50": 0.765216,
+    "p90": 0.931427,
+    "p99": 1.14327,
+    "max": 8.05264
   },
-  "gpu_util_pct": 77.9341,
-  "decoder_util_pct": 40.7363,
-  "cpu_ms_per_frame": 1.70934,
+  "gpu_util_pct": 78.5802,
+  "decoder_util_pct": 40.2215,
+  "cpu_ms_per_frame": 1.69567,
   "environment": {
     "gpu": "NVIDIA GeForce RTX 5070 Ti",
     "compute_capability": "12.0",

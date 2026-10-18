@@ -8,8 +8,8 @@
   "recall_vs_ref": 0.9994439810953573,
   "precision_vs_ref": 0.9995829278465175,
   "iou_thresh": 0.5,
-  "matched_iou_mean": 0.9977925434646895,
+  "matched_iou_mean": 0.9977827067641333,
   "matched_iou_p01": 0.9723138403523525,
-  "score_absdiff_mean": 0.00046414089012517467,
+  "score_absdiff_mean": 0.0004624684283727406,
   "score_absdiff_max": 0.10752700000000004
 }
