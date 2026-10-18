@@ -275,6 +275,7 @@ build/release/vrt_pipeline --engine models/yolox_s_fp16.engine --video data/foot
 build/release/vrt_multistream --engine models/yolox_s_fp16.engine --streams 8 \
   --videos data/footage/barn022.mp4,data/footage/barn023.mp4 --fps 30 --mode sync
 python tools/eval_coco.py --size s --engine models/yolox_s_fp16.engine   # COCO mAP
+bench/live_demo.sh               # live 2x2 camera wall (needs a display; WSLg works)
 
 bench/run_all.sh                 # decode, baseline and every pipeline variant (idle GPU)
 bench/run_multistream.sh         # scaling: unthrottled capacity and 30 fps cameras
@@ -284,6 +285,13 @@ python tools/make_calib.py && PRECISIONS=int8 bench/build_engines.sh   # INT8
 bench/make_demo.sh               # the demo video
 python bench/make_tables.py      # regenerate the tables in this README
 ```
+
+**Live demo.** `bench/live_demo.sh` runs four barn clips through `vrt_multistream --show` as
+30 fps cameras and opens a 2x2 window with the boxes, cow counts, and each camera's fps and
+rolling p99 latency as the pipeline measures them. With `--show`, each frame also gets a GPU
+downscale to 640x360 and one small copy to the host. The camera threads hand that copy off and
+never wait for the viewer (`tools/live_view.py`, Tk, reading stdin), which skips frames if it
+falls behind. Without `--show` none of this runs, so the benchmark numbers don't include it.
 
 ## Design decisions
 
