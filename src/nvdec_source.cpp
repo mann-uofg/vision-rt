@@ -213,6 +213,17 @@ NvdecSource::Recv NvdecSource::receive(GpuFrame& out) {
   return Recv::kFrame;
 }
 
+void NvdecSource::rewind() {
+  Impl& s = *impl_;
+  const AVStream* st = s.fmt->streams[s.stream];
+  const std::int64_t start = st->start_time == AV_NOPTS_VALUE ? 0 : st->start_time;
+  check(av_seek_frame(s.fmt, s.stream, start, AVSEEK_FLAG_BACKWARD), "seek to start");
+  avcodec_flush_buffers(s.dec);  // also clears the end-of-stream state after a flush packet
+  av_packet_unref(s.pkt);
+  s.pending = false;
+  s.draining = false;
+}
+
 bool NvdecSource::read(GpuFrame& out) {
   while (true) {
     switch (receive(out)) {

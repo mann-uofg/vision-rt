@@ -73,6 +73,11 @@ class NvdecSource {
   // A decoded frame if one is ready (waits for NVDEC to finish it), kNeedInput if the decoder
   // needs another send() first, kEnd once it is fully drained.
   Recv receive(GpuFrame& out);
+
+  // Seek back to the first frame and reset the decoder, so a clip can loop (the live demo).
+  // GpuFrames already handed out stay valid.
+  void rewind();
+
   const VideoInfo& info() const { return info_; }
 
  private:
