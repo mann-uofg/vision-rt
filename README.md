@@ -87,6 +87,46 @@ cameras with YOLOX-S at p99 under 5.4 ms** for every stream, or 24 with YOLOX-M.
 cameras YOLOX-S demand reaches ~83% of what the GPU serves frame by frame (~1,450 fps). The
 median is still 2.7 ms, but p99 jumps to ~0.7 s.
 
+### Batching frames across cameras
+
+![Batching](docs/batching.png)
+
+[`vrt_batched`](apps/vrt_batched.cpp) puts every camera's decoded frames in one queue. A batcher
+thread takes up to *B* of them, letterboxes each into its slot of one input tensor, and runs the
+smallest static-batch engine (1/2/4/8/16) that fits. NMS then runs per image as parallel branches
+of one CUDA graph. Batched detections match the unbatched GPU path on 99.94% of boxes, mean IoU
+0.998 ([`compare_batched_b4_barn022.json`](bench/results/compare_batched_b4_barn022.json)). They
+aren't bit-identical because each batch size is a separate engine with its own FP16 tactics.
+
+| YOLOX-S FP16, 32 cameras flat out | max batch 1 | 4 | 16 | one context per camera |
+|---|---|---|---|---|
+| mean batch formed | 1.0 | 3.9 | 14.4 | 1 |
+| engine time per image | 0.60 ms | 0.37 ms | 0.37 ms | 0.60 ms (same engine) |
+| all GPU work per image (preprocess + engine + NMS) | 0.80 ms | 0.56 ms | 0.67 ms | 0.77 ms |
+| total throughput | 1,096 fps | **1,596 fps** | 1,356 fps | **1,684 fps** |
+| worst camera's p99 | 59 ms | 44 ms | 61 ms | 68 ms |
+
+Batching makes the engine 1.6x cheaper per image, with no further gain past batch 4. End to end
+it still loses to per-camera contexts by ~6%, for two reasons:
+
+- **One batcher means one batch at a time.** It waits for each batch's results before launching
+  the next, so its stream is ~90% busy while NVML shows the GPU only ~73% busy. With a context
+  per camera, many streams' kernels overlap and the GPU reaches ~91%.
+- **NMS doesn't batch.** Per-image NMS, even as parallel graph branches, gets slower per image as
+  the batch grows: preprocess plus NMS is ~0.2 ms per image at batch 1 and ~0.3 ms at batch 16.
+  A batched NMS kernel over `[B, 8400, 85]` is the next step.
+
+With live cameras, batching changes nothing that matters. Unsynchronised 30 fps cameras arrive
+one at a time, and the batcher doesn't wait, so batches stay at ~1.1 frames up to 32 cameras
+(worst p99 4.1 ms, vs 5.3 ms per camera). Bigger batches only form once a queue builds, and by
+then the GPU is past capacity. The knee stays between 32 and 40 cameras. Waiting a few ms to
+fill a batch would trade latency for throughput that real-time loads don't need.
+
+Building this turned up a crash in about one run in twenty. A CUDA graph was being captured
+lazily while other threads decoded, which sometimes invalidated the capture. The error path then
+corrupted a frame-slot counter, and a frame was written to `frames[-1]`. The fix was to capture
+every graph before any worker thread starts, in both the batched and the per-camera apps.
+
 ### Accuracy vs latency
 
 ![Pareto](docs/pareto.png)
@@ -170,7 +210,8 @@ from 0.57 to ~2.5 ms. My kernels write a fixed-size result block and take ~0.15 
 | GPU score filter + NMS | [`src/kernels/postprocess.cu`](src/kernels/postprocess.cu) |
 | TensorRT engine, contexts, CUDA graphs | [`src/trt_engine.cpp`](src/trt_engine.cpp) |
 | Per-camera pipeline (streams, events, pinned slots) | [`src/gpu_pipeline.cpp`](src/gpu_pipeline.cpp) |
-| Apps: single stream, multi-stream, decode bench, COCO | [`apps/`](apps) |
+| Cross-camera batching (batch engines, parallel NMS graph) | [`src/batch_inference.cpp`](src/batch_inference.cpp), [`apps/vrt_batched.cpp`](apps/vrt_batched.cpp) |
+| Apps: single stream, multi-stream, batched, decode bench, COCO | [`apps/`](apps) |
 | CPU reference path (M1) and baseline (M0) | [`src/sync_pipeline.cpp`](src/sync_pipeline.cpp), [`tools/baseline.py`](tools/baseline.py) |
 | ONNX export, INT8 quantization, NMS-layer variant | [`tools/export_onnx.py`](tools/export_onnx.py), [`tools/quantize_int8.py`](tools/quantize_int8.py), [`tools/add_nms.py`](tools/add_nms.py) |
 | Tests: C++ unit, C++ vs Python, CUDA vs C++ | [`tests/`](tests) |
@@ -214,6 +255,7 @@ python tools/eval_coco.py --size s --engine models/yolox_s_fp16.engine   # COCO 
 
 bench/run_all.sh                 # decode, baseline and every pipeline variant (idle GPU)
 bench/run_multistream.sh         # scaling: unthrottled capacity and 30 fps cameras
+SIZES=s PRECISIONS= BATCHES="2 4 8 16" bench/build_engines.sh && bench/run_batched.sh  # batching
 bench/profile_timelines.sh       # Nsight traces -> docs/timeline_*.png
 python tools/make_calib.py && PRECISIONS=int8 bench/build_engines.sh   # INT8
 bench/make_demo.sh               # the demo video
@@ -247,8 +289,8 @@ python bench/make_tables.py      # regenerate the tables in this README
 - **WSL2.** Kernel launches cost more than on native Linux (that's part of why CUDA graphs
   helped so much), and host-side jitter shows up in the baseline's p99. Not re-measured on
   bare-metal Linux.
-- **Batch 1 only.** Batching frames across cameras would amortise per-inference overhead and is
-  the obvious next step for capacity.
+- **Cross-camera batching doesn't beat per-camera contexts yet** (1,596 vs 1,684 fps). It needs
+  a batched NMS kernel and more than one batch in flight.
 - **COCO model, no fine-tuning.** Wide barn shots work well; dark close-ups and calves get
   misclassified (dog, sheep, horse), as the demo shows. Fine-tuning on cattle footage would fix
   that. The footage is barn-style, not real fixed-mount barn cameras.
