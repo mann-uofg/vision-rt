@@ -11,6 +11,9 @@ frame to having its detections in host memory:
 - **1.8 ms per frame** (p99 2.9 ms), vs 13.7 ms for a naive PyTorch pipeline. **775 fps** on
   one stream with decode overlapped, 10.6x the baseline.
 - **32 live 30 fps cameras on one GPU**, every stream's p99 under 5.4 ms.
+- **2,264 fps across 32 cameras with cross-camera batching** (up to 8 cameras' frames per
+  inference, NMS batched on the GPU), 34% more than one context per camera. Live, it takes 40
+  cameras at 30 fps with every stream's p99 under 8.7 ms.
 - **0.5 ms of CPU per frame**, down from 49.6 ms.
 - Accuracy kept: COCO val2017 mAP 40.25 in FP16 vs 40.26 for the PyTorch model.
 
@@ -23,7 +26,7 @@ cows in green and counted, everything else the model reports in grey, mistakes i
 
 Every number comes from a file in [`bench/results/`](bench/results) that records its
 conditions and versions. Hardware: RTX 5070 Ti (Blackwell, sm_120), WSL2 Ubuntu 24.04, CUDA
-13.3, TensorRT 11.3, driver 617.42. YOLOX at 640x640, batch 1.
+13.3, TensorRT 11.3, driver 617.42. YOLOX at 640x640, batch 1 except in the batching section.
 
 ### Where the time goes, step by step
 
