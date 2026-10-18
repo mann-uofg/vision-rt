@@ -2,7 +2,7 @@
 //
 //   vrt_batched --engines models/yolox_s_fp16.engine,models/yolox_s_fp16_b2.engine,...
 //               --videos data/footage/barn004.mp4,... --streams 32 --max-batch 8
-//               [--fps 0] [--warmup 100] [--frames 1000] [--decode-threads N]
+//               [--in-flight 2] [--fps 0] [--warmup 100] [--frames 1000] [--decode-threads N]
 //               [--json out.json] [--dets-dir DIR]
 //
 // Each camera has its own NVDEC decoder and CUDA stream. Decoder threads (--decode-threads,
@@ -13,7 +13,9 @@
 // may have at most two frames waiting, which gives backpressure. One batcher thread takes
 // whatever is queued, up to --max-batch frames, oldest first, and runs them as one batch
 // (vrt::BatchInference). This is dynamic batching with no added delay: when the GPU is busy,
-// frames pile up and the next batch is bigger; when it's idle, batches are small.
+// frames pile up and the next batch is bigger; when it's idle, batches are small. Up to
+// --in-flight batches (default 2) are queued on the GPU at once, so the next batch is already
+// launched while the batcher waits for the previous one's results.
 //
 // All CUDA graphs are captured before the threads start (BatchInference::prepare): capturing
 // one while decoder threads run can be invalidated by their device activity (INTERVIEW H3).
@@ -178,58 +180,83 @@ void decoder_loop(std::vector<std::unique_ptr<Camera>>& cams, std::vector<int> i
 }
 
 struct BatchStats {
-  std::vector<double> batch_sizes, infer_ms, total_ms;
+  std::vector<double> batch_sizes, preprocess_ms, infer_ms, postprocess_ms, total_ms;
 };
 
+// Takes whatever is queued (up to max_batch frames, oldest first) and submits it as a batch.
+// Up to `batches_in_flight` batches are on the GPU at once: with two, batch n+1 is queued
+// before the thread blocks on batch n, so the batch stream doesn't sit empty while this thread
+// unpacks results and gathers the next batch. When nothing new is queued, it finishes the
+// oldest batch, which hands frame slots back to the decoders.
 void batcher_loop(vrt::BatchInference& inf, std::vector<std::unique_ptr<Camera>>& cams,
-                  int max_batch, long long warmup, Shared& sh, BatchStats& stats,
-                  std::string& error) {
+                  int max_batch, int batches_in_flight, long long warmup, Shared& sh,
+                  BatchStats& stats, std::string& error) {
+  struct Pending {
+    int ticket;
+    std::vector<Request> reqs;
+  };
+  std::deque<Pending> pending;
+
+  const auto finish = [&](const Pending& p) {
+    vrt::BatchTimes t;
+    const std::vector<vrt::Detections> dets = inf.wait(p.ticket, &t);
+    const auto now = clock_type::now();
+    stats.batch_sizes.push_back(t.batch);
+    stats.preprocess_ms.push_back(t.preprocess_ms);
+    stats.infer_ms.push_back(t.infer_ms);
+    stats.postprocess_ms.push_back(t.postprocess_ms);
+    stats.total_ms.push_back(t.total_ms);
+
+    for (std::size_t j = 0; j < p.reqs.size(); ++j) {
+      const Request& r = p.reqs[j];
+      Camera& c = *cams[static_cast<std::size_t>(r.cam)];
+      if (r.index >= warmup) {
+        c.latency.push_back(ms_between(r.release, now));
+        c.timed_begin = std::min(c.timed_begin, r.release);
+        c.timed_end = now;
+        ++c.timed;
+      }
+      if (c.dets.is_open()) {
+        for (const auto& d : dets[j])
+          c.dets << r.index << ',' << d.x1 << ',' << d.y1 << ',' << d.x2 << ',' << d.y2 << ','
+                 << d.score << ',' << d.cls << '\n';
+      }
+      {
+        // Hand the slot back without touching the frame: FFmpeg frames are only freed on the
+        // decoder thread, when it reuses the slot.
+        std::lock_guard lock(c.m);
+        c.busy[r.slot] = false;
+        --c.in_flight;
+      }
+      sh.decoder_cv.notify_one();
+    }
+  };
+
   try {
     while (true) {
       std::vector<Request> reqs;
       {
         std::unique_lock lock(sh.m);
-        sh.cv.wait(lock, [&] { return !sh.queue.empty() || sh.decoder_done; });
-        if (sh.queue.empty()) break;  // the decoder finished and nothing is left
+        // Only block for new frames when nothing is in flight; otherwise take what's there.
+        if (pending.empty()) sh.cv.wait(lock, [&] { return !sh.queue.empty() || sh.decoder_done; });
+        if (sh.queue.empty() && pending.empty()) break;  // decoders done, nothing left
         while (!sh.queue.empty() && static_cast<int>(reqs.size()) < max_batch) {
           reqs.push_back(sh.queue.front());
           sh.queue.pop_front();
         }
       }
-      std::vector<vrt::BatchItem> items;
-      for (const Request& r : reqs) {
-        Camera& c = *cams[static_cast<std::size_t>(r.cam)];
-        items.push_back({&c.frames[r.slot], c.ready[r.slot]});
+      if (!reqs.empty()) {
+        std::vector<vrt::BatchItem> items;
+        for (const Request& r : reqs) {
+          Camera& c = *cams[static_cast<std::size_t>(r.cam)];
+          items.push_back({&c.frames[r.slot], c.ready[r.slot]});
+        }
+        pending.push_back({inf.submit(items), std::move(reqs)});
       }
-      vrt::BatchTimes t;
-      const std::vector<vrt::Detections> dets = inf.run(items, &t);
-      const auto now = clock_type::now();
-      stats.batch_sizes.push_back(t.batch);
-      stats.infer_ms.push_back(t.infer_ms);
-      stats.total_ms.push_back(t.total_ms);
-
-      for (std::size_t j = 0; j < reqs.size(); ++j) {
-        const Request& r = reqs[j];
-        Camera& c = *cams[static_cast<std::size_t>(r.cam)];
-        if (r.index >= warmup) {
-          c.latency.push_back(ms_between(r.release, now));
-          c.timed_begin = std::min(c.timed_begin, r.release);
-          c.timed_end = now;
-          ++c.timed;
-        }
-        if (c.dets.is_open()) {
-          for (const auto& d : dets[j])
-            c.dets << r.index << ',' << d.x1 << ',' << d.y1 << ',' << d.x2 << ',' << d.y2 << ','
-                   << d.score << ',' << d.cls << '\n';
-        }
-        {
-          // Hand the slot back without touching the frame: FFmpeg frames are only freed on the
-          // decoder thread, when it reuses the slot.
-          std::lock_guard lock(c.m);
-          c.busy[r.slot] = false;
-          --c.in_flight;
-        }
-        sh.decoder_cv.notify_one();
+      if (static_cast<int>(pending.size()) == batches_in_flight ||
+          (reqs.empty() && !pending.empty())) {
+        finish(pending.front());
+        pending.pop_front();
       }
     }
   } catch (const std::exception& e) {
@@ -250,7 +277,9 @@ int run(const vrt::Args& args) {
   const float nms = args.real("nms", vrt::kDeployNmsIou);
 
   vrt::CudaStream batch_stream;
-  vrt::BatchInference inf(engines, batch_stream, conf, nms);
+  const int in_flight = static_cast<int>(args.integer("in-flight", 2));
+  if (in_flight < 1) throw std::invalid_argument("--in-flight must be at least 1");
+  vrt::BatchInference inf(engines, batch_stream, conf, nms, 100, in_flight);
   const int max_batch = static_cast<int>(args.integer("max-batch", inf.max_batch()));
   if (max_batch < 1 || max_batch > inf.max_batch())
     throw std::invalid_argument("--max-batch must be between 1 and the largest engine's batch");
@@ -290,8 +319,8 @@ int run(const vrt::Args& args) {
     decoders.emplace_back(decoder_loop, std::ref(cams), ids, fps, warmup + frames, std::ref(start),
                           std::ref(sh), std::ref(decode_errors[static_cast<std::size_t>(d)]));
   }
-  std::thread batcher(batcher_loop, std::ref(inf), std::ref(cams), max_batch, warmup, std::ref(sh),
-                      std::ref(stats), std::ref(batch_error));
+  std::thread batcher(batcher_loop, std::ref(inf), std::ref(cams), max_batch, in_flight, warmup,
+                      std::ref(sh), std::ref(stats), std::ref(batch_error));
   const double cpu0 = vrt::process_cpu_ms();
   start.arrive_and_wait();
   sampler.start();
@@ -321,12 +350,15 @@ int run(const vrt::Args& args) {
 
   vrt::JsonWriter j;
   j.begin_object().field("pipeline", "gpu-nvdec-batched").field("engines", args.str("engines"));
-  j.field("streams", n).field("max_batch", max_batch).field("fps_per_stream_limit", fps);
+  j.field("streams", n).field("max_batch", max_batch).field("batches_in_flight", in_flight);
+  j.field("nms", "batched").field("fps_per_stream_limit", fps);
   j.field("phase_staggered", fps > 0).field("decode_threads", decode_threads);
   j.field("warmup_frames", warmup).field("timed_frames_per_stream", frames);
   j.field("aggregate_fps", agg_fps).field("per_stream_fps", agg_fps / n);
   j.field("latency_ms", lat).field("worst_stream_p99_ms", worst_p99);
-  j.field("batch_size", bs).field("batch_infer_ms", vrt::summarize(stats.infer_ms));
+  j.field("batch_size", bs).field("batch_preprocess_ms", vrt::summarize(stats.preprocess_ms));
+  j.field("batch_infer_ms", vrt::summarize(stats.infer_ms));
+  j.field("batch_postprocess_ms", vrt::summarize(stats.postprocess_ms));
   j.field("batch_gpu_total_ms", vrt::summarize(stats.total_ms));
   j.field("gpu_util_pct", sampler.gpu_mean()).field("decoder_util_pct", sampler.decoder_mean());
   j.field("cpu_ms_per_frame", (cpu1 - cpu0) / static_cast<double>(n * (warmup + frames)));
@@ -336,10 +368,10 @@ int run(const vrt::Args& args) {
   if (args.has("json")) std::ofstream(args.str("json")) << j.str();
 
   std::printf(
-      "%2d streams, max batch %2d (fps limit %g): %7.1f fps total, mean batch %.1f, latency p50 "
-      "%.2f p99 %.2f worst-stream p99 %.2f ms, GPU %.0f%%, NVDEC %.0f%%\n",
-      n, max_batch, fps, agg_fps, bs.mean, lat.p50, lat.p99, worst_p99, sampler.gpu_mean(),
-      sampler.decoder_mean());
+      "%2d streams, max batch %2d, %d in flight (fps limit %g): %7.1f fps total, mean batch %.1f, "
+      "latency p50 %.2f p99 %.2f worst-stream p99 %.2f ms, GPU %.0f%%, NVDEC %.0f%%\n",
+      n, max_batch, in_flight, fps, agg_fps, bs.mean, lat.p50, lat.p99, worst_p99,
+      sampler.gpu_mean(), sampler.decoder_mean());
   return 0;
 }
 

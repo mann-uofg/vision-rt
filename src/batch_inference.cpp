@@ -9,9 +9,10 @@
 namespace vrt {
 
 BatchInference::BatchInference(const std::vector<std::string>& engine_paths, cudaStream_t stream,
-                               float conf, float iou, int max_det)
+                               float conf, float iou, int max_det, int sets)
     : stream_(stream), conf_(conf), iou_(iou), max_det_(max_det) {
   if (engine_paths.empty()) throw std::invalid_argument("no engines");
+  if (sets < 1) throw std::invalid_argument("need at least one result set");
   for (const auto& path : engine_paths) {
     auto ctx = std::make_unique<TrtEngine>(TrtModel::load(path));
     const TensorInfo& in = ctx->input();
@@ -47,7 +48,6 @@ BatchInference::BatchInference(const std::vector<std::string>& engine_paths, cud
     throw std::runtime_error("input must be float16 or float32");
   }
   in_slot_bytes_ = big_in.bytes / static_cast<std::size_t>(max_batch_);
-  out_slot_floats_ = big_out.count / static_cast<std::size_t>(max_batch_);
   num_anchors_ = static_cast<int>(big_out.dims.d[1]);
   num_classes_ = static_cast<int>(big_out.dims.d[2]) - 5;
 
@@ -59,31 +59,23 @@ BatchInference::BatchInference(const std::vector<std::string>& engine_paths, cud
     e.ctx->capture_graph(stream_);
   }
 
-  for (int i = 0; i < max_batch_; ++i)
-    post_.push_back(std::make_unique<GpuPostprocess>(num_anchors_, num_classes_, max_det_));
-  result_bytes_ = post_[0]->output_bytes();
-  VRT_CUDA_CHECK(cudaHostAlloc(&host_, result_bytes_ * static_cast<std::size_t>(max_batch_),
-                               cudaHostAllocDefault));
-  for (auto& e : ev_) VRT_CUDA_CHECK(cudaEventCreate(&e));
-  VRT_CUDA_CHECK(cudaEventCreateWithFlags(&fork_, cudaEventDisableTiming));
-  side_.resize(static_cast<std::size_t>(max_batch_));
-  join_.resize(static_cast<std::size_t>(max_batch_));
-  for (int i = 0; i < max_batch_; ++i) {
-    VRT_CUDA_CHECK(
-        cudaStreamCreateWithFlags(&side_[static_cast<std::size_t>(i)], cudaStreamNonBlocking));
-    VRT_CUDA_CHECK(
-        cudaEventCreateWithFlags(&join_[static_cast<std::size_t>(i)], cudaEventDisableTiming));
+  post_ = std::make_unique<GpuBatchPostprocess>(max_batch_, num_anchors_, num_classes_, max_det_);
+  result_bytes_ = post_->result_bytes();
+  sets_.resize(static_cast<std::size_t>(sets));
+  for (ResultSet& s : sets_) {
+    VRT_CUDA_CHECK(cudaHostAlloc(&s.host, result_bytes_ * static_cast<std::size_t>(max_batch_),
+                                 cudaHostAllocDefault));
+    for (auto& e : s.ev) VRT_CUDA_CHECK(cudaEventCreate(&e));
   }
 }
 
 BatchInference::~BatchInference() {
   cudaStreamSynchronize(stream_);
   for (auto& [k, g] : post_graphs_) cudaGraphExecDestroy(g);
-  for (auto& e : ev_) cudaEventDestroy(e);
-  for (auto& e : join_) cudaEventDestroy(e);
-  for (auto& s : side_) cudaStreamDestroy(s);
-  cudaEventDestroy(fork_);
-  cudaFreeHost(host_);
+  for (ResultSet& s : sets_) {
+    for (auto& e : s.ev) cudaEventDestroy(e);
+    cudaFreeHost(s.host);
+  }
   cudaFree(d_out_);
   cudaFree(d_in_);
 }
@@ -94,8 +86,8 @@ const BatchInference::Engine& BatchInference::pick(int k) const {
   throw std::invalid_argument("batch larger than the largest engine");
 }
 
-// NMS for the first k slots plus their result copies, as one graph. Captured on first use for
-// each k; recaptured for all k if the letterbox scale changes (different frame size).
+// Batched NMS over the first k slots, as one graph. Captured on first use for each k;
+// recaptured for all k if the letterbox scale changes (different frame size).
 cudaGraphExec_t BatchInference::post_graph(int k, float scale) {
   if (scale != graph_scale_) {
     VRT_CUDA_CHECK(cudaStreamSynchronize(stream_));
@@ -106,20 +98,8 @@ cudaGraphExec_t BatchInference::post_graph(int k, float scale) {
   auto it = post_graphs_.find(k);
   if (it != post_graphs_.end()) return it->second;
 
-  // Fork: each slot's NMS + result copy goes on its own side stream; the capture follows the
-  // event dependencies, so the graph gets k parallel branches that join back on stream_.
   VRT_CUDA_CHECK(cudaStreamBeginCapture(stream_, cudaStreamCaptureModeThreadLocal));
-  VRT_CUDA_CHECK(cudaEventRecord(fork_, stream_));
-  for (int i = 0; i < k; ++i) {
-    const auto s = static_cast<std::size_t>(i);
-    VRT_CUDA_CHECK(cudaStreamWaitEvent(side_[s], fork_, 0));
-    post_[s]->run(d_out_ + s * out_slot_floats_, scale, conf_, iou_, side_[s]);
-    VRT_CUDA_CHECK(cudaMemcpyAsync(static_cast<char*>(host_) + s * result_bytes_,
-                                   post_[s]->output(), result_bytes_, cudaMemcpyDeviceToHost,
-                                   side_[s]));
-    VRT_CUDA_CHECK(cudaEventRecord(join_[s], side_[s]));
-    VRT_CUDA_CHECK(cudaStreamWaitEvent(stream_, join_[s], 0));
-  }
+  post_->run(d_out_, k, scale, conf_, iou_, stream_);
   cudaGraph_t graph = nullptr;
   VRT_CUDA_CHECK(cudaStreamEndCapture(stream_, &graph));
   cudaGraphExec_t exec = nullptr;
@@ -138,25 +118,33 @@ void BatchInference::prepare(int frame_w, int frame_h) {
   VRT_CUDA_CHECK(cudaStreamSynchronize(stream_));
 }
 
-std::vector<Detections> BatchInference::run(const std::vector<BatchItem>& items,
-                                            BatchTimes* times) {
-  NvtxRange range("batch");
+int BatchInference::submit(const std::vector<BatchItem>& items) {
+  NvtxRange range("batch submit");
   const int k = static_cast<int>(items.size());
-  if (k < 1) return {};
+  if (k < 1) throw std::invalid_argument("empty batch");
+  const int ticket = next_set_;
+  ResultSet& set = sets_[static_cast<std::size_t>(ticket)];
+  if (set.pending) throw std::logic_error("submit: every result set is still in flight");
   const Engine& e = pick(k);
   const GpuFrame& first = *items[0].frame;
-  if (!letterbox_ || letterbox_->src_w() != first.width || letterbox_->src_h() != first.height)
+  if (!letterbox_ || letterbox_->src_w() != first.width || letterbox_->src_h() != first.height) {
+    VRT_CUDA_CHECK(cudaStreamSynchronize(stream_));  // queued batches still use the old tables
     letterbox_ = std::make_unique<GpuLetterbox>(first.width, first.height,
                                                 static_cast<int>(e.ctx->input().dims.d[3]),
                                                 static_cast<int>(e.ctx->input().dims.d[2]));
-
-  VRT_CUDA_CHECK(cudaEventRecord(ev_[0], stream_));
-  for (int i = 0; i < k; ++i) {
-    const GpuFrame& f = *items[static_cast<std::size_t>(i)].frame;
-    if (f.width != first.width || f.height != first.height)
+  }
+  for (const BatchItem& it : items)
+    if (it.frame->width != first.width || it.frame->height != first.height)
       throw std::invalid_argument("all frames in a batch must have the same size");
+  // Capture (if this k is new) before queuing anything of this batch on the stream.
+  const cudaGraphExec_t post = post_graph(k, letterbox_->scale());
+
+  VRT_CUDA_CHECK(cudaEventRecord(set.ev[0], stream_));
+  for (int i = 0; i < k; ++i) {
+    const BatchItem& it = items[static_cast<std::size_t>(i)];
+    const GpuFrame& f = *it.frame;
     // The frame's surface copy was queued on its camera's decode stream.
-    VRT_CUDA_CHECK(cudaStreamWaitEvent(stream_, items[static_cast<std::size_t>(i)].ready, 0));
+    VRT_CUDA_CHECK(cudaStreamWaitEvent(stream_, it.ready, 0));
     Nv12View v;
     v.luma = f.luma;
     v.chroma = f.chroma;
@@ -168,17 +156,33 @@ std::vector<Detections> BatchInference::run(const std::vector<BatchItem>& items,
                     static_cast<char*>(d_in_) + static_cast<std::size_t>(i) * in_slot_bytes_,
                     format_, stream_);
   }
-  VRT_CUDA_CHECK(cudaEventRecord(ev_[1], stream_));
+  VRT_CUDA_CHECK(cudaEventRecord(set.ev[1], stream_));
   e.ctx->enqueue(stream_);
-  VRT_CUDA_CHECK(cudaEventRecord(ev_[2], stream_));
-  VRT_CUDA_CHECK(cudaGraphLaunch(post_graph(k, letterbox_->scale()), stream_));
-  VRT_CUDA_CHECK(cudaEventRecord(ev_[3], stream_));
-  VRT_CUDA_CHECK(cudaEventSynchronize(ev_[3]));
+  VRT_CUDA_CHECK(cudaEventRecord(set.ev[2], stream_));
+  VRT_CUDA_CHECK(cudaGraphLaunch(post, stream_));
+  VRT_CUDA_CHECK(cudaMemcpyAsync(set.host, post_->output(),
+                                 result_bytes_ * static_cast<std::size_t>(k),
+                                 cudaMemcpyDeviceToHost, stream_));
+  VRT_CUDA_CHECK(cudaEventRecord(set.ev[3], stream_));
+  set.batch = k;
+  set.engine = e.batch;
+  set.pending = true;
+  next_set_ = (next_set_ + 1) % static_cast<int>(sets_.size());
+  return ticket;
+}
 
+std::vector<Detections> BatchInference::wait(int ticket, BatchTimes* times) {
+  NvtxRange range("batch wait");
+  ResultSet& set = sets_.at(static_cast<std::size_t>(ticket));
+  if (!set.pending) throw std::logic_error("wait: nothing in flight for this ticket");
+  VRT_CUDA_CHECK(cudaEventSynchronize(set.ev[3]));
+  set.pending = false;
+
+  const int k = set.batch;
   std::vector<Detections> out(static_cast<std::size_t>(k));
   for (int i = 0; i < k; ++i) {
     const auto* res = reinterpret_cast<const GpuDetections*>(
-        static_cast<const char*>(host_) + static_cast<std::size_t>(i) * result_bytes_);
+        static_cast<const char*>(set.host) + static_cast<std::size_t>(i) * result_bytes_);
     Detections& d = out[static_cast<std::size_t>(i)];
     d.resize(static_cast<std::size_t>(res->count));
     for (int j = 0; j < res->count; ++j) {
@@ -188,11 +192,11 @@ std::vector<Detections> BatchInference::run(const std::vector<BatchItem>& items,
   }
   if (times) {
     times->batch = k;
-    times->engine = e.batch;
-    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->preprocess_ms, ev_[0], ev_[1]));
-    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->infer_ms, ev_[1], ev_[2]));
-    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->postprocess_ms, ev_[2], ev_[3]));
-    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->total_ms, ev_[0], ev_[3]));
+    times->engine = set.engine;
+    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->preprocess_ms, set.ev[0], set.ev[1]));
+    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->infer_ms, set.ev[1], set.ev[2]));
+    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->postprocess_ms, set.ev[2], set.ev[3]));
+    VRT_CUDA_CHECK(cudaEventElapsedTime(&times->total_ms, set.ev[0], set.ev[3]));
   }
   return out;
 }
