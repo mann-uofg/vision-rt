@@ -65,15 +65,16 @@ if(VRT_GPU)
   target_link_libraries(vrt_gpu_capi PRIVATE vrt_kernels)
 
   add_library(vrt_gpu STATIC src/trt_engine.cpp src/sync_pipeline.cpp src/nvdec_source.cpp
-                      src/gpu_pipeline.cpp)
+                      src/gpu_pipeline.cpp src/batch_inference.cpp)
   target_link_libraries(vrt_gpu PUBLIC vrt_core vrt_video vrt_kernels TensorRT::nvinfer
                                        CUDA::cudart CUDA::cuda_driver)
   # TensorRT headers trip -Wpedantic/-Wextra; treat them as system headers.
   target_include_directories(vrt_gpu SYSTEM PUBLIC "${TRT_INCLUDE_DIR}")
 
-  foreach(app vrt_detect vrt_coco vrt_decode_bench vrt_pipeline vrt_multistream)
+  foreach(app vrt_detect vrt_coco vrt_decode_bench vrt_pipeline vrt_multistream vrt_batched)
     add_executable(${app} apps/${app}.cpp)
     target_link_libraries(${app} PRIVATE vrt_gpu)
   endforeach()
   target_link_libraries(vrt_multistream PRIVATE CUDA::nvml)
+  target_link_libraries(vrt_batched PRIVATE CUDA::nvml)
 endif()
