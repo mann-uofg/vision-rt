@@ -80,4 +80,28 @@ int vrt_gpu_postprocess(const float* preds, int num_anchors, int num_classes, fl
   });
 }
 
+// The batched path. preds: host [batch, num_anchors, 5 + num_classes]. out: batch * max_det
+// rows of 6 floats (image i's rows start at i * max_det); counts: batch ints.
+int vrt_gpu_postprocess_batched(const float* preds, int batch, int num_anchors, int num_classes,
+                                float scale, float conf_thresh, float iou_thresh, int max_det,
+                                float* out, int* counts) {
+  return guarded([&] {
+    const std::size_t bytes = sizeof(float) * batch * num_anchors * (5ull + num_classes);
+    DeviceBuffer d_preds(bytes);
+    VRT_CUDA_CHECK(cudaMemcpy(d_preds.p, preds, bytes, cudaMemcpyHostToDevice));
+    vrt::GpuBatchPostprocess post(batch, num_anchors, num_classes, max_det);
+    post.run(static_cast<const float*>(d_preds.p), batch, scale, conf_thresh, iou_thresh, nullptr);
+    std::string host(post.result_bytes() * static_cast<std::size_t>(batch), '\0');
+    VRT_CUDA_CHECK(cudaMemcpy(host.data(), post.output(), host.size(), cudaMemcpyDeviceToHost));
+    for (int i = 0; i < batch; ++i) {
+      const auto* res = reinterpret_cast<const vrt::GpuDetections*>(
+          host.data() + static_cast<std::size_t>(i) * post.result_bytes());
+      counts[i] = res->count;
+      std::memcpy(out + static_cast<std::size_t>(i) * max_det * 6, res->dets,
+                  sizeof(float) * 6 * static_cast<std::size_t>(res->count));
+    }
+    return 0;
+  });
+}
+
 }  // extern "C"

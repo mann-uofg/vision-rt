@@ -40,6 +40,9 @@ def lib():
     lib.vrt_gpu_nv12_letterbox.argtypes = [U8P] + [ctypes.c_int] * 7 + [ctypes.c_void_p]
     lib.vrt_gpu_postprocess.argtypes = [F32P, ctypes.c_int, ctypes.c_int, ctypes.c_float,
                                         ctypes.c_float, ctypes.c_float, ctypes.c_int, F32P]
+    lib.vrt_gpu_postprocess_batched.argtypes = [
+        F32P, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_float, ctypes.c_float,
+        ctypes.c_float, ctypes.c_int, F32P, np.ctypeslib.ndpointer(np.int32, flags="C_CONTIGUOUS")]
     return lib
 
 
@@ -147,3 +150,67 @@ def test_postprocess_no_candidates(lib):
     preds = np.zeros((8400, 85), dtype=np.float32)
     out = np.empty((10, 6), dtype=np.float32)
     assert lib.vrt_gpu_postprocess(preds, 8400, 80, 1.0, 0.3, 0.45, 10, out) == 0
+
+
+def gpu_postprocess(lib, preds, scale, conf, iou, max_det):
+    out = np.empty((max_det, 6), dtype=np.float32)
+    count = lib.vrt_gpu_postprocess(preds, preds.shape[0], 80, scale, conf, iou, max_det, out)
+    assert count >= 0, lib.vrt_gpu_last_error().decode()
+    return out[:count]
+
+
+def gpu_postprocess_batched(lib, batch, scale, conf, iou, max_det):
+    b, n, _ = batch.shape
+    out = np.empty((b, max_det, 6), dtype=np.float32)
+    counts = np.empty(b, dtype=np.int32)
+    rc = lib.vrt_gpu_postprocess_batched(np.ascontiguousarray(batch), b, n, 80, scale, conf, iou,
+                                         max_det, out, counts)
+    assert rc == 0, lib.vrt_gpu_last_error().decode()
+    return [out[i, : counts[i]] for i in range(b)]
+
+
+def mixed_batch(size: int, seed: int) -> np.ndarray:
+    """Images that differ in candidate count: clustered scenes, one with no candidates, one with
+    scores rounded to 2 decimals (many exact ties, so the anchor tiebreak matters), and a
+    repeat of image 0 (identical boxes in two images must not suppress each other)."""
+    images = []
+    for i in range(size):
+        if i % 6 == 3:
+            images.append(np.zeros((8400, 85), dtype=np.float32))
+        elif i % 6 == 4:
+            p = clustered_preds(8400, seed * 100 + i)
+            p[:, 4:] = np.round(p[:, 4:], 2)
+            images.append(p)
+        elif i % 6 == 5:
+            images.append(images[0].copy())
+        else:
+            images.append(clustered_preds(8400, seed * 100 + i))
+    return np.stack(images)
+
+
+@pytest.mark.parametrize("size", [1, 2, 5, 8, 16])
+@pytest.mark.parametrize("conf,iou,max_det", [(0.3, 0.45, 100), (0.01, 0.65, 8400), (0.01, 0.65, 7)])
+def test_batched_postprocess_bit_identical_to_per_image(lib, size, conf, iou, max_det):
+    # One sort over the whole batch, tiles strided over a fixed grid, one walk block per image:
+    # every image's detections must be exactly the single-image kernels' (all six columns).
+    batch = mixed_batch(size, seed=size)
+    scale = 1 / 3
+    ours = gpu_postprocess_batched(lib, batch, scale, conf, iou, max_det)
+    for i in range(size):
+        ref = gpu_postprocess(lib, batch[i], scale, conf, iou, max_det)
+        assert len(ours[i]) == len(ref), f"image {i}"
+        np.testing.assert_array_equal(ours[i], ref, err_msg=f"image {i}")
+    if size > 3:
+        assert len(ours[3]) == 0  # the all-zero image
+
+
+def test_batched_postprocess_matches_reference(lib):
+    batch = mixed_batch(6, seed=11)
+    ours = gpu_postprocess_batched(lib, batch, 0.5, 0.3, 0.45, 8400)
+    for i in range(6):
+        if i == 4:
+            continue  # exact score ties: torchvision's batched_nms breaks them its own way
+        ref = postprocess(torch.from_numpy(batch[i].copy()), 0.5, 0.3, 0.45)
+        assert len(ours[i]) == len(ref)
+        np.testing.assert_array_equal(ours[i][:, 4:], ref[:, 4:])
+        np.testing.assert_allclose(ours[i][:, :4], ref[:, :4], rtol=0, atol=1e-3)
