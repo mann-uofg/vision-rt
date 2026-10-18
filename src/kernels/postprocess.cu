@@ -285,6 +285,9 @@ GpuPostprocess::GpuPostprocess(int num_anchors, int num_classes, int max_det)
       num_classes_(num_classes),
       max_det_(max_det),
       col_blocks_((num_anchors + kBlock - 1) / kBlock) {
+  // Each anchor row is 5 + num_classes floats; the score kernel reads at least one class.
+  if (num_anchors < 1 || num_classes < 1 || max_det < 1)
+    throw std::invalid_argument("GpuPostprocess: anchors, classes and max_det must be >= 1");
   const auto n = static_cast<std::size_t>(num_anchors);
   VRT_CUDA_CHECK(cudaMalloc(&keys_in_, n * sizeof(unsigned long long)));
   VRT_CUDA_CHECK(cudaMalloc(&keys_out_, n * sizeof(unsigned long long)));
@@ -348,6 +351,8 @@ GpuBatchPostprocess::GpuBatchPostprocess(int max_batch, int num_anchors, int num
   // The key has 8 bits of image and 16 of anchor (see batch_sort_key).
   if (max_batch < 1 || max_batch > 254 || num_anchors < 1 || num_anchors > 0xFFFF)
     throw std::invalid_argument("GpuBatchPostprocess: batch must be 1-254, anchors 1-65535");
+  if (num_classes < 1 || max_det < 1)
+    throw std::invalid_argument("GpuBatchPostprocess: classes and max_det must be >= 1");
   const auto n = static_cast<std::size_t>(max_batch) * static_cast<std::size_t>(num_anchors);
   VRT_CUDA_CHECK(cudaMalloc(&keys_in_, n * sizeof(unsigned long long)));
   VRT_CUDA_CHECK(cudaMalloc(&keys_out_, n * sizeof(unsigned long long)));

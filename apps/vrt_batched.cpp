@@ -275,6 +275,8 @@ int run(const vrt::Args& args) {
   const long long frames = args.integer("frames", 1000);
   const float conf = args.real("conf", vrt::kDeployConf);
   const float nms = args.real("nms", vrt::kDeployNmsIou);
+  if (videos.empty() || n < 1) throw std::invalid_argument("need --videos and --streams >= 1");
+  if (frames < 1 || warmup < 0) throw std::invalid_argument("need --frames >= 1, --warmup >= 0");
 
   vrt::CudaStream batch_stream;
   const int in_flight = static_cast<int>(args.integer("in-flight", 2));
