@@ -86,6 +86,30 @@ __global__ void nv12_letterbox_kernel(Nv12View src, YuvCoeffs c,
   dst[o + 2 * plane] = convert<T>(blend(p00.z, p01.z, p10.z, p11.z, a.w1, b.w1));
 }
 
+// One thread per output pixel, BGR interleaved.
+__global__ void nv12_thumbnail_kernel(Nv12View src, YuvCoeffs c, int dst_w, int dst_h,
+                                      std::uint8_t* __restrict__ dst) {
+  const int x = blockIdx.x * blockDim.x + threadIdx.x;
+  const int y = blockIdx.y * blockDim.y + threadIdx.y;
+  if (x >= dst_w || y >= dst_h) return;
+  const int x0 = x * src.width / dst_w, x1 = max((x + 1) * src.width / dst_w, x0 + 1);
+  const int y0 = y * src.height / dst_h, y1 = max((y + 1) * src.height / dst_h, y0 + 1);
+  float3 sum = make_float3(0.f, 0.f, 0.f);
+  for (int sy = y0; sy < y1; ++sy) {
+    for (int sx = x0; sx < x1; ++sx) {
+      const float3 p = bgr_at(src, c, sx, sy);
+      sum.x += p.x;
+      sum.y += p.y;
+      sum.z += p.z;
+    }
+  }
+  const float n = static_cast<float>((x1 - x0) * (y1 - y0));
+  std::uint8_t* o = dst + (static_cast<std::size_t>(y) * dst_w + x) * 3;
+  o[0] = static_cast<std::uint8_t>(to_u8(sum.x / n));
+  o[1] = static_cast<std::uint8_t>(to_u8(sum.y / n));
+  o[2] = static_cast<std::uint8_t>(to_u8(sum.z / n));
+}
+
 void* upload_taps(const std::vector<LetterboxTap>& taps) {
   void* d = nullptr;
   const std::size_t bytes = taps.size() * sizeof(LetterboxTap);
@@ -127,6 +151,16 @@ void GpuLetterbox::run(const Nv12View& src, const YuvCoeffs& coeffs, void* dst, 
     nv12_letterbox_kernel<<<grid, block, 0, stream>>>(src, coeffs, tx, ty, content_w_, content_h_,
                                                       dst_w_, dst_h_, static_cast<float*>(dst));
   }
+  VRT_CUDA_CHECK(cudaGetLastError());
+}
+
+void nv12_to_bgr_thumbnail(const Nv12View& src, const YuvCoeffs& coeffs, std::uint8_t* dst,
+                           int dst_w, int dst_h, cudaStream_t stream) {
+  if (dst_w < 1 || dst_h < 1 || dst_w > src.width || dst_h > src.height)
+    throw std::invalid_argument("thumbnail must be no larger than the frame");
+  const dim3 block(32, 8);
+  const dim3 grid((dst_w + block.x - 1) / block.x, (dst_h + block.y - 1) / block.y);
+  nv12_thumbnail_kernel<<<grid, block, 0, stream>>>(src, coeffs, dst_w, dst_h, dst);
   VRT_CUDA_CHECK(cudaGetLastError());
 }
 

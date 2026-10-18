@@ -52,4 +52,11 @@ class GpuLetterbox {
   void* taps_y_ = nullptr;  // LetterboxTap[content_h_]
 };
 
+// A small packed-BGR copy of an NV12 frame, for display (vrt_multistream --show), not inference.
+// Output pixel (x, y) is the mean of the source pixels in [x*W/w, (x+1)*W/w) x [y*H/h,
+// (y+1)*H/h), each converted like the letterbox taps and rounded; for integer factors
+// (1080p -> 640x360) that is an exact box filter.
+void nv12_to_bgr_thumbnail(const Nv12View& src, const YuvCoeffs& coeffs, std::uint8_t* dst,
+                           int dst_w, int dst_h, cudaStream_t stream);
+
 }  // namespace vrt

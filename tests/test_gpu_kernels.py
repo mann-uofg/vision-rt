@@ -38,6 +38,7 @@ def lib():
     lib = ctypes.CDLL(str(LIB_PATH))
     lib.vrt_gpu_last_error.restype = ctypes.c_char_p
     lib.vrt_gpu_nv12_letterbox.argtypes = [U8P] + [ctypes.c_int] * 7 + [ctypes.c_void_p]
+    lib.vrt_gpu_nv12_thumbnail.argtypes = [U8P] + [ctypes.c_int] * 6 + [U8P]
     lib.vrt_gpu_postprocess.argtypes = [F32P, ctypes.c_int, ctypes.c_int, ctypes.c_float,
                                         ctypes.c_float, ctypes.c_float, ctypes.c_int, F32P]
     lib.vrt_gpu_postprocess_batched.argtypes = [
@@ -105,6 +106,26 @@ def test_letterbox_fp16_equals_fp32(lib):
     a = gpu_letterbox(lib, nv12, 1920, 1080, True, False, fp16=True)
     b = gpu_letterbox(lib, nv12, 1920, 1080, True, False, fp16=False)
     np.testing.assert_array_equal(a, b)
+
+
+@pytest.mark.parametrize("w,h,dw,dh", [(1920, 1080, 640, 360), (1280, 720, 640, 360),
+                                       (854, 480, 300, 170)])
+@pytest.mark.parametrize("bt709,full_range", [(True, False), (False, True)])
+def test_thumbnail_is_box_mean_of_converted_pixels(lib, w, h, dw, dh, bt709, full_range):
+    # The live-demo thumbnail: each output pixel is the rounded mean of the BGR pixels in its
+    # integer box [x*w//dw, (x+1)*w//dw). Box sums are exact in float and a mean is never
+    # within float error of a rounding boundary unless it is on one, so this is bit-exact.
+    nv12 = synthetic_nv12(w, h, seed=w + dw)
+    bgr = nv12_to_bgr(nv12, w, h, "bt709" if bt709 else "bt601", full_range).astype(np.int64)
+    x0 = np.arange(dw) * w // dw  # downscaling: the boxes tile the frame
+    y0 = np.arange(dh) * h // dh
+    sums = np.add.reduceat(np.add.reduceat(bgr, x0, axis=1), y0, axis=0)
+    counts = np.outer(np.diff(np.append(y0, h)), np.diff(np.append(x0, w)))[..., None]
+    ref = np.clip(np.floor(sums / counts + 0.5), 0, 255).astype(np.uint8)
+    out = np.empty((dh, dw, 3), dtype=np.uint8)
+    rc = lib.vrt_gpu_nv12_thumbnail(nv12, w, h, int(bt709), int(full_range), dw, dh, out)
+    assert rc == 0, lib.vrt_gpu_last_error().decode()
+    np.testing.assert_array_equal(out, ref)
 
 
 def clustered_preds(n: int, seed: int) -> np.ndarray:

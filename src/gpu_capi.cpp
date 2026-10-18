@@ -62,6 +62,29 @@ int vrt_gpu_nv12_letterbox(const std::uint8_t* nv12, int w, int h, int bt709, in
   });
 }
 
+// nv12 as above. out: dst_h x dst_w x 3 BGR bytes.
+int vrt_gpu_nv12_thumbnail(const std::uint8_t* nv12, int w, int h, int bt709, int full_range,
+                           int dst_w, int dst_h, std::uint8_t* out) {
+  return guarded([&] {
+    const std::size_t luma = static_cast<std::size_t>(w) * h;
+    const std::size_t out_bytes = 3ull * dst_w * dst_h;
+    DeviceBuffer d_src(luma * 3 / 2);
+    DeviceBuffer d_out(out_bytes);
+    VRT_CUDA_CHECK(cudaMemcpy(d_src.p, nv12, luma * 3 / 2, cudaMemcpyHostToDevice));
+
+    vrt::Nv12View v;
+    v.luma = static_cast<const std::uint8_t*>(d_src.p);
+    v.chroma = v.luma + luma;
+    v.luma_pitch = v.chroma_pitch = w;
+    v.width = w;
+    v.height = h;
+    vrt::nv12_to_bgr_thumbnail(v, vrt::yuv_coeffs(bt709 != 0, full_range != 0),
+                               static_cast<std::uint8_t*>(d_out.p), dst_w, dst_h, nullptr);
+    VRT_CUDA_CHECK(cudaMemcpy(out, d_out.p, out_bytes, cudaMemcpyDeviceToHost));
+    return 0;
+  });
+}
+
 // preds: host [num_anchors, 5 + num_classes]. out: max_det rows of 6 floats. Returns the
 // number of detections kept (<= max_det).
 int vrt_gpu_postprocess(const float* preds, int num_anchors, int num_classes, float scale,
