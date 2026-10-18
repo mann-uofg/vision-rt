@@ -71,8 +71,9 @@ if(VRT_GPU)
   # TensorRT headers trip -Wpedantic/-Wextra; treat them as system headers.
   target_include_directories(vrt_gpu SYSTEM PUBLIC "${TRT_INCLUDE_DIR}")
 
-  foreach(app vrt_detect vrt_coco vrt_decode_bench vrt_pipeline)
+  foreach(app vrt_detect vrt_coco vrt_decode_bench vrt_pipeline vrt_multistream)
     add_executable(${app} apps/${app}.cpp)
     target_link_libraries(${app} PRIVATE vrt_gpu)
   endforeach()
+  target_link_libraries(vrt_multistream PRIVATE CUDA::nvml)
 endif()
