@@ -93,34 +93,54 @@ median is still 2.7 ms, but p99 jumps to ~0.7 s.
 
 [`vrt_batched`](apps/vrt_batched.cpp) puts every camera's decoded frames in one queue. A batcher
 thread takes up to *B* of them, letterboxes each into its slot of one input tensor, and runs the
-smallest static-batch engine (1/2/4/8/16) that fits. NMS then runs per image as parallel branches
-of one CUDA graph. Batched detections match the unbatched GPU path on 99.94% of boxes, mean IoU
-0.998 ([`compare_batched_b4_barn022.json`](bench/results/compare_batched_b4_barn022.json)). They
-aren't bit-identical because each batch size is a separate engine with its own FP16 tactics.
+smallest static-batch engine (1/2/4/8/16) that fits. Then batched NMS runs once for the whole
+batch, and one copy brings every image's detections back.
 
-| YOLOX-S FP16, 32 cameras flat out | max batch 1 | 4 | 16 | one context per camera |
-|---|---|---|---|---|
-| mean batch formed | 1.0 | 3.9 | 14.4 | 1 |
-| engine time per image | 0.60 ms | 0.37 ms | 0.37 ms | 0.60 ms (same engine) |
-| all GPU work per image (preprocess + engine + NMS) | 0.80 ms | 0.56 ms | 0.67 ms | 0.77 ms |
-| total throughput | 1,096 fps | **1,596 fps** | 1,356 fps | **1,684 fps** |
-| worst camera's p99 | 59 ms | 44 ms | 61 ms | 68 ms |
+| YOLOX-S FP16, 32 cameras flat out | max batch 1 | 4 | 8 | 16 | one context per camera |
+|---|---|---|---|---|---|
+| mean batch formed | 1.0 | 3.9 | 7.6 | 14.5 | 1 |
+| engine time per image | 0.62 ms | 0.38 ms | 0.36 ms | 0.39 ms | 0.60 ms (same engine) |
+| NMS time per image | 0.15 ms | 0.022 ms | 0.015 ms | 0.014 ms | 0.15 ms |
+| total throughput | 1,127 fps | 2,161 fps | **2,264 fps** | 1,714 fps | **1,684 fps** |
+| worst camera's p99 | 57 ms | 30 ms | 34 ms | 43 ms | 68 ms |
+| GPU / NVDEC busy (NVML) | 79% / 40% | 84% / 75% | 83% / 82% | 68% / 66% | 91% / 65% |
 
-Batching makes the engine 1.6x cheaper per image, with no further gain past batch 4. End to end
-it still loses to per-camera contexts by ~6%, for two reasons:
+At max batch 8, batching does 2,264 fps on 32 cameras: 34% more than one batch-1 context per
+camera, with half the tail latency. The first version reached 1,596 fps, short of per-camera
+contexts, because only the engine was batched. NMS still ran per image, as parallel branches of
+a CUDA graph, and it got *more* expensive per image as batches grew. What changed:
 
-- **One batcher means one batch at a time.** It waits for each batch's results before launching
-  the next, so its stream is ~90% busy while NVML shows the GPU only ~73% busy. With a context
-  per camera, many streams' kernels overlap and the GPU reaches ~91%.
-- **NMS doesn't batch.** Per-image NMS, even as parallel graph branches, gets slower per image as
-  the batch grows: preprocess plus NMS is ~0.2 ms per image at batch 1 and ~0.3 ms at batch 16.
-  A batched NMS kernel over `[B, 8400, 85]` is the next step.
+- **Batched NMS** ([`postprocess.cu`](src/kernels/postprocess.cu), `GpuBatchPostprocess`). One
+  score kernel covers all of `[B, 8400, 85]`. One CUB radix sort then covers all B x 8400
+  anchors, because the image index sits in the top bits of a 56-bit key: inverted image,
+  score, inverted anchor. Each image's candidates come out together, in the same order the
+  per-image sort gives. One mask kernel and one walk kernel, with a block per image, finish the
+  job. NMS costs 0.015 ms per image at batch 8, against 0.15 ms for one image on its own.
+  Results are bit-identical to the per-image kernels, which
+  [`test_gpu_kernels.py`](tests/test_gpu_kernels.py) checks for batches of 1-16, including
+  empty images, exact score ties and duplicate images. At max batch 1, `vrt_batched` reproduces
+  the unbatched GPU path's detections on barn022 exactly
+  ([`compare_batched_b1_barn022.json`](bench/results/compare_batched_b1_barn022.json)).
+  Larger batches use other engines with their own FP16 tactics. They match on 99.94% of boxes,
+  mean IoU 0.998 ([`compare_batched_b4_barn022.json`](bench/results/compare_batched_b4_barn022.json)).
+- **Two batches in flight** (`--in-flight 2`, the default) queues batch n+1 before the host
+  waits on batch n. It makes no measurable difference: 2,264 fps vs 2,303 with one in flight in
+  the run above, and 2,263 vs 2,258 averaged over three sweeps. Once NMS is batched, the batch
+  stream is 93-95% occupied either way. The host's turnaround between batches was never the gap.
 
-With live cameras, batching changes nothing that matters. Unsynchronised 30 fps cameras arrive
-one at a time, and the batcher doesn't wait, so batches stay at ~1.1 frames up to 32 cameras
-(worst p99 4.1 ms, vs 5.3 ms per camera). Bigger batches only form once a queue builds, and by
-then the GPU is past capacity. The knee stays between 32 and 40 cameras. Waiting a few ms to
-fill a batch would trade latency for throughput that real-time loads don't need.
+What limits it now is decode, more than compute. Across every run, NVDEC load tracks throughput
+at about 35-39% per 1,000 fps. That puts the decoders' ceiling at roughly 2,600-2,900 fps, and
+max batch 8 already runs them at 82%. The engine stops getting cheaper per image after batch 4.
+Max batch 16 falls back to 1,714 fps, with both GPU and NVDEC at ~67%. In its batches, the
+preprocess span (which includes waiting for each frame's decode-side ready event) grows from
+0.04 to 0.15 ms per image. The batcher is waiting for frames, not computing.
+
+With live cameras, batching now moves the knee. Unsynchronised 30 fps cameras arrive one at a
+time, and the batcher doesn't wait, so batches stay around 1.1 frames. But when a burst builds
+a queue, the next batch is bigger and cheaper per frame, so the queue drains. With max batch 8,
+40 cameras run at worst p99 8.7 ms, where per-camera contexts are at 998 ms. The knee moves from
+32-40 cameras to 40-48. Waiting a few ms to fill batches would trade latency for throughput that
+these loads don't need.
 
 Building this turned up a crash in about one run in twenty. A CUDA graph was being captured
 lazily while other threads decoded, which sometimes invalidated the capture. The error path then
@@ -210,7 +230,7 @@ from 0.57 to ~2.5 ms. My kernels write a fixed-size result block and take ~0.15 
 | GPU score filter + NMS | [`src/kernels/postprocess.cu`](src/kernels/postprocess.cu) |
 | TensorRT engine, contexts, CUDA graphs | [`src/trt_engine.cpp`](src/trt_engine.cpp) |
 | Per-camera pipeline (streams, events, pinned slots) | [`src/gpu_pipeline.cpp`](src/gpu_pipeline.cpp) |
-| Cross-camera batching (batch engines, parallel NMS graph) | [`src/batch_inference.cpp`](src/batch_inference.cpp), [`apps/vrt_batched.cpp`](apps/vrt_batched.cpp) |
+| Cross-camera batching (batch engines, batched NMS) | [`src/batch_inference.cpp`](src/batch_inference.cpp), [`apps/vrt_batched.cpp`](apps/vrt_batched.cpp) |
 | Apps: single stream, multi-stream, batched, decode bench, COCO | [`apps/`](apps) |
 | CPU reference path (M1) and baseline (M0) | [`src/sync_pipeline.cpp`](src/sync_pipeline.cpp), [`tools/baseline.py`](tools/baseline.py) |
 | ONNX export, INT8 quantization, NMS-layer variant | [`tools/export_onnx.py`](tools/export_onnx.py), [`tools/quantize_int8.py`](tools/quantize_int8.py), [`tools/add_nms.py`](tools/add_nms.py) |
@@ -289,8 +309,10 @@ python bench/make_tables.py      # regenerate the tables in this README
 - **WSL2.** Kernel launches cost more than on native Linux (that's part of why CUDA graphs
   helped so much), and host-side jitter shows up in the baseline's p99. Not re-measured on
   bare-metal Linux.
-- **Cross-camera batching doesn't beat per-camera contexts yet** (1,596 vs 1,684 fps). It needs
-  a batched NMS kernel and more than one batch in flight.
+- **Batching runs close to the decode limit.** Cross-camera batching reaches 2,264 fps on 32
+  cameras with NVDEC at 82%, and decode load rises in step with throughput. Going further takes
+  more decode headroom, not bigger batches. Live cameras only get batches of ~1 unless the
+  batcher waits.
 - **COCO model, no fine-tuning.** Wide barn shots work well; dark close-ups and calves get
   misclassified (dog, sheep, horse), as the demo shows. Fine-tuning on cattle footage would fix
   that. The footage is barn-style, not real fixed-mount barn cameras.

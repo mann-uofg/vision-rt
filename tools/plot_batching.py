@@ -2,7 +2,8 @@
 """Cross-camera batching vs one batch-1 context per camera.
 
 left:  unthrottled total throughput vs max batch size (bench/results/batched_fps0_*), with the
-       per-camera-context design's capacity (multistream_*_fps0) as a reference line
+       32-camera ablations (batched-inflight1_*, batched-branchnms_*) and the per-camera-context
+       design's capacity (multistream_*_fps0) as a reference line
 right: 30 fps cameras, worst stream's p99 vs number of cameras, batched vs per-camera contexts
 
     python tools/plot_batching.py docs/batching.png
@@ -33,14 +34,24 @@ def main() -> None:
 
     fig, (a, b) = plt.subplots(1, 2, figsize=(11.5, 4), dpi=150)
 
-    # Capacity vs max batch, one line per camera count.
+    # Capacity vs max batch, one line per camera count, plus the 32-camera ablations: batched
+    # NMS with one batch in flight, and the first version (per-image NMS as graph branches).
+    for pattern, style, label in [
+        ("batched-branchnms_fps0_n32_b*.json", ":", "32 cameras, per-image NMS (before)"),
+        ("batched-inflight1_fps0_n32_b*.json", "--", "32 cameras, batched NMS, 1 batch in flight"),
+    ]:
+        rs = sorted(load(pattern), key=lambda r: r["max_batch"])
+        if rs:
+            a.plot([r["max_batch"] for r in rs], [r["aggregate_fps"] for r in rs], "o" + style,
+                   color="#9aa0a6", ms=3, lw=1, label=label)
     cap = load("batched_fps0_n*_b*.json")
     # The second line sits just above the first, so its labels go above and the first's below.
     for i, n in enumerate(sorted({r["streams"] for r in cap})):
         color = ["#3f7fbf", "#c44e52"][i % 2]
         rs = sorted((r for r in cap if r["streams"] == n), key=lambda r: r["max_batch"])
         xs = [r["max_batch"] for r in rs]
-        a.plot(xs, [r["aggregate_fps"] for r in rs], "o-", color=color, label=f"{n} cameras, batched")
+        a.plot(xs, [r["aggregate_fps"] for r in rs], "o-", color=color,
+               label=f"{n} cameras, 2 batches in flight")
         for r in rs:
             a.annotate(f"{r['batch_size']['mean']:.1f}", (r["max_batch"], r["aggregate_fps"]),
                        textcoords="offset points", xytext=(0, 7 if i else -12), ha="center", fontsize=7,
@@ -54,7 +65,7 @@ def main() -> None:
     a.set_xticks([1, 2, 4, 8, 16], ["1", "2", "4", "8", "16"])
     a.set_xlabel("max batch size (frames from different cameras)")
     a.set_ylabel("total throughput, all cameras (fps)")
-    a.set_ylim(bottom=0)
+    a.set_ylim(0, a.get_ylim()[1] * 1.08)  # room for the labels above the top point
     a.set_title("Unthrottled capacity (labels: mean batch actually formed)", fontsize=9)
     a.legend(fontsize=8, frameon=False, loc="lower right")
 
