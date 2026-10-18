@@ -8,15 +8,32 @@
 #   int8max  same, max calibration
 #   int8fp32 INT8 with FP32 (not FP16) for the non-quantized layers (see INTERVIEW H2)
 #
+# BATCHES="2 4 8 16" also builds static-batch FP16 engines (yolox_<size>_fp16_b<B>) for
+# cross-camera batching (bench/run_batched.sh). For only those:
+#   SIZES=s PRECISIONS= BATCHES="2 4 8 16" bench/build_engines.sh
+#
 # Engines go to models/ (gitignored). Each build also writes the engine's layer list to
 # bench/results/engines/ and keeps trtexec's model-only timing summary next to it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 SIZES="${SIZES:-s m}"
-PRECISIONS="${PRECISIONS:-fp32 tf32 fp16}"
+PRECISIONS="${PRECISIONS-fp32 tf32 fp16}"
+BATCHES="${BATCHES:-}"
 OUT=bench/results/engines
 mkdir -p "$OUT"
+
+build() {  # build <name> <onnx> [trtexec args...]
+  local name=$1 onnx=$2
+  trtexec --onnx="$onnx" --saveEngine="models/$name.engine" "${@:3}" \
+    --profilingVerbosity=detailed --timingCacheFile=models/timing.cache \
+    --exportLayerInfo="$OUT/$name.layers.json" --duration=10 \
+    > "models/$name.build.log" 2>&1 || { tail -20 "models/$name.build.log"; exit 1; }
+  # Model-only numbers from trtexec (fixed input, no pre/post, no copies). Not end-to-end.
+  grep -E "TensorRT version|Selected Device|Compute Capability|Throughput:|GPU Compute Time:|Latency:|Engine built in|Total Activation Memory" \
+    "models/$name.build.log" | sed 's/^\[[^]]*\] *\[I\] *//' > "$OUT/$name.trtexec.txt"
+  echo "== $name"; grep -E "Throughput|GPU Compute Time" "$OUT/$name.trtexec.txt"
+}
 
 for size in $SIZES; do
   [ -f "models/yolox_${size}_fp32.onnx" ] || python tools/export_onnx.py --size "$size"
@@ -36,13 +53,12 @@ for size in $SIZES; do
         [ -f "$onnx" ] || python tools/quantize_int8.py --size "$size" --high-precision fp32 --tag int8fp32 ;;
       *) echo "unknown precision $prec" >&2; exit 1 ;;
     esac
-    trtexec --onnx="$onnx" --saveEngine="models/$name.engine" "${extra[@]}" \
-      --profilingVerbosity=detailed --timingCacheFile=models/timing.cache \
-      --exportLayerInfo="$OUT/$name.layers.json" --duration=10 \
-      > "models/$name.build.log" 2>&1 || { tail -20 "models/$name.build.log"; exit 1; }
-    # Model-only numbers from trtexec (fixed input, no pre/post, no copies). Not end-to-end.
-    grep -E "TensorRT version|Selected Device|Compute Capability|Throughput:|GPU Compute Time:|Latency:|Engine built in|Total Activation Memory" \
-      "models/$name.build.log" | sed 's/^\[[^]]*\] *\[I\] *//' > "$OUT/$name.trtexec.txt"
-    echo "== $name"; grep -E "Throughput|GPU Compute Time" "$OUT/$name.trtexec.txt"
+    build "$name" "$onnx" "${extra[@]}"
+  done
+  for b in $BATCHES; do
+    name="yolox_${size}_fp16_b$b"
+    [ -f "models/$name.onnx" ] ||
+      python tools/export_onnx.py --size "$size" --fp16 --batch "$b" --out "models/$name.onnx"
+    build "$name" "models/$name.onnx"
   done
 done

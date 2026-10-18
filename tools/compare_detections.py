@@ -84,11 +84,17 @@ def main() -> None:
     ap.add_argument("--ref", type=Path, required=True)
     ap.add_argument("--test", type=Path, required=True)
     ap.add_argument("--iou", type=float, default=0.5)
+    ap.add_argument("--min-frame", type=int, help="only compare frames from this index on")
+    ap.add_argument("--max-frame", type=int, help="only compare frames below this index")
     ap.add_argument("--out", type=Path, help="write the summary as JSON here")
     args = ap.parse_args()
 
     ref, test = load(args.ref), load(args.test)
     frames = sorted(set(ref) | set(test))
+    if args.min_frame is not None:
+        frames = [f for f in frames if f >= args.min_frame]
+    if args.max_frame is not None:
+        frames = [f for f in frames if f < args.max_frame]
     report = {"ref": args.ref.name, "test": args.test.name, **compare(ref, test, frames, args.iou)}
     print(json.dumps(report, indent=2))
     if args.out:
