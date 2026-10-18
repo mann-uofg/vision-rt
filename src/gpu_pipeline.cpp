@@ -1,6 +1,7 @@
 #include "vrt/gpu_pipeline.h"
 
 #include <stdexcept>
+#include <utility>
 
 #include "vrt/cuda_check.h"
 #include "vrt/half.h"
@@ -10,6 +11,15 @@ namespace vrt {
 
 GpuPipeline::GpuPipeline(const std::string& engine_path, cudaStream_t stream, int max_det)
     : engine_(engine_path), stream_(stream) {
+  init(max_det);
+}
+
+GpuPipeline::GpuPipeline(std::shared_ptr<TrtModel> model, cudaStream_t stream, int max_det)
+    : engine_(std::move(model)), stream_(stream) {
+  init(max_det);
+}
+
+void GpuPipeline::init(int max_det) {
   const TensorInfo& in = engine_.input();
   const TensorInfo& out = engine_.output();
   if (in.dims.nbDims != 4 || in.dims.d[0] != 1 || in.dims.d[1] != 3)

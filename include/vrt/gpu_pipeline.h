@@ -36,6 +36,8 @@ class GpuPipeline {
   static constexpr int kSlots = 2;
 
   GpuPipeline(const std::string& engine_path, cudaStream_t stream, int max_det = 100);
+  // Shares an already-loaded model: this pipeline gets its own execution context only.
+  GpuPipeline(std::shared_ptr<TrtModel> model, cudaStream_t stream, int max_det = 100);
   ~GpuPipeline();
   GpuPipeline(const GpuPipeline&) = delete;
   GpuPipeline& operator=(const GpuPipeline&) = delete;
@@ -54,6 +56,8 @@ class GpuPipeline {
   cudaStream_t stream() const { return stream_; }
 
  private:
+  void init(int max_det);
+
   // Postprocessing is ~12 small launches (memset, score, 4 CUB sort kernels, gather, mask,
   // walk), and under WSL each launch costs more than the kernel. All its arguments are fixed
   // for a given video and thresholds, so it is captured into a CUDA graph on first use and

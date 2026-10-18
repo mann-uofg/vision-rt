@@ -6,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <stdexcept>
+#include <utility>
 
 #include "vrt/cuda_check.h"
 
@@ -86,21 +87,21 @@ std::string tensorrt_version() {
          std::to_string(NV_TENSORRT_PATCH);
 }
 
-TrtEngine::TrtEngine(const std::string& engine_path) {
-  runtime_.reset(nvinfer1::createInferRuntime(logger()));
-  if (!runtime_) throw std::runtime_error("createInferRuntime failed");
+std::shared_ptr<TrtModel> TrtModel::load(const std::string& engine_path) {
+  std::shared_ptr<TrtModel> m(new TrtModel());
+  m->runtime_.reset(nvinfer1::createInferRuntime(logger()));
+  if (!m->runtime_) throw std::runtime_error("createInferRuntime failed");
   const std::vector<char> blob = read_file(engine_path);
-  engine_.reset(runtime_->deserializeCudaEngine(blob.data(), blob.size()));
-  if (!engine_) throw std::runtime_error("failed to deserialize " + engine_path);
-  context_.reset(engine_->createExecutionContext());
-  if (!context_) throw std::runtime_error("createExecutionContext failed");
+  m->engine_.reset(m->runtime_->deserializeCudaEngine(blob.data(), blob.size()));
+  if (!m->engine_) throw std::runtime_error("failed to deserialize " + engine_path);
 
-  for (int i = 0; i < engine_->getNbIOTensors(); ++i) {
+  nvinfer1::ICudaEngine& e = *m->engine_;
+  for (int i = 0; i < e.getNbIOTensors(); ++i) {
     TensorInfo t;
-    t.name = engine_->getIOTensorName(i);
-    t.dtype = engine_->getTensorDataType(t.name.c_str());
-    t.dims = engine_->getTensorShape(t.name.c_str());
-    t.is_input = engine_->getTensorIOMode(t.name.c_str()) == nvinfer1::TensorIOMode::kINPUT;
+    t.name = e.getIOTensorName(i);
+    t.dtype = e.getTensorDataType(t.name.c_str());
+    t.dims = e.getTensorShape(t.name.c_str());
+    t.is_input = e.getTensorIOMode(t.name.c_str()) == nvinfer1::TensorIOMode::kINPUT;
     t.count = 1;
     for (int d = 0; d < t.dims.nbDims; ++d) {
       if (t.dims.d[d] < 0)
@@ -108,8 +109,16 @@ TrtEngine::TrtEngine(const std::string& engine_path) {
       t.count *= static_cast<std::size_t>(t.dims.d[d]);
     }
     t.bytes = t.count * dtype_size(t.dtype);
-    tensors_.push_back(t);
+    m->tensors_.push_back(t);
   }
+  return m;
+}
+
+TrtEngine::TrtEngine(const std::string& engine_path) : TrtEngine(TrtModel::load(engine_path)) {}
+
+TrtEngine::TrtEngine(std::shared_ptr<TrtModel> model) : model_(std::move(model)) {
+  context_.reset(model_->engine().createExecutionContext());
+  if (!context_) throw std::runtime_error("createExecutionContext failed");
 }
 
 TrtEngine::~TrtEngine() {
@@ -118,13 +127,13 @@ TrtEngine::~TrtEngine() {
 }
 
 const TensorInfo& TrtEngine::input() const {
-  for (const auto& t : tensors_)
+  for (const auto& t : tensors())
     if (t.is_input) return t;
   throw std::runtime_error("engine has no input");
 }
 
 const TensorInfo& TrtEngine::output() const {
-  for (const auto& t : tensors_)
+  for (const auto& t : tensors())
     if (!t.is_input) return t;
   throw std::runtime_error("engine has no output");
 }
