@@ -14,6 +14,16 @@ RESULTS = ROOT / "bench" / "results"
 README = ROOT / "README.md"
 MODELS = ["yolox_s", "yolox_m"]
 PRECISIONS = ["fp32", "tf32", "fp16"]
+# Every engine variant with an accuracy number, in table order. YOLOX-M int8 (INT8 with FP16
+# elsewhere) is broken on TensorRT 11.3 (see INTERVIEW H2); int8fp32 keeps FP32 elsewhere.
+VARIANTS = {
+    "yolox_s": ["fp32", "tf32", "fp16", "int8", "int8max"],
+    "yolox_m": ["fp32", "tf32", "fp16", "int8", "int8fp32"],
+}
+LATENCY_VARIANTS = {"yolox_s": ["fp32", "tf32", "fp16", "int8"],
+                    "yolox_m": ["fp32", "tf32", "fp16", "int8fp32"]}
+LABELS = {"int8": "int8 (entropy)", "int8max": "int8 (max calib.)",
+          "int8fp32": "int8, fp32 elsewhere"}
 CLIP = "barn022"
 
 
@@ -119,13 +129,14 @@ def m2_table() -> str:
     ]
     for model in MODELS:
         base = load_run("baseline", model, "")
-        for prec in PRECISIONS:
+        for prec in LATENCY_VARIANTS[model]:
             s, pl = load_run("gpu_sync", model, prec), load_run("gpu_pipelined", model, prec)
             if not (s and pl):
                 continue
             gain = pl["throughput_fps"] / base["throughput_fps"] if base else None
             rows.append(
-                f"| {pretty(model)} | {prec} | {fmt(coco_ap(model, 'tensorrt', prec), '.2f')} "
+                f"| {pretty(model)} | {LABELS.get(prec, prec)} "
+                f"| {fmt(coco_ap(model, 'tensorrt', prec), '.2f')} "
                 f"| {s['host_ms']['latency']['mean']:.2f} / {s['host_ms']['latency']['p99']:.2f} ms "
                 f"| {s['throughput_fps']:.0f} | {pl['throughput_fps']:.0f} "
                 f"| {s['gpu_ms']['total']['mean']:.2f} ms | {fmt(gain, '.1f')}x |"
@@ -150,10 +161,13 @@ def accuracy_table() -> str:
         "|---|---|---|---|---|---|",
     ]
     for model in MODELS:
-        for prec in PRECISIONS:
+        for prec in VARIANTS[model]:
             torch_ap = coco_ap(model, "pytorch", {"fp32": "fp32", "tf32": "fp32-tf32"}.get(prec, ""))
+            label = LABELS.get(prec, prec)
+            if (model, prec) == ("yolox_m", "int8"):
+                label += " ⚠"
             rows.append(
-                f"| {pretty(model)} | {prec} | {fmt(torch_ap, '.2f')} "
+                f"| {pretty(model)} | {label} | {fmt(torch_ap, '.2f')} "
                 f"| {fmt(coco_ap(model, 'tensorrt', prec), '.2f')} "
                 f"| {fmt(coco_ap(model, 'external', 'cpp-' + prec), '.2f')} "
                 f"| {fmt(trtexec_gpu_ms(model, prec), '.2f')} ms |"
@@ -163,7 +177,11 @@ def accuracy_table() -> str:
         "COCO val2017 mAP@0.5:0.95, all 5,000 images, score threshold 0.01, NMS IoU 0.65. "
         "\"C++ app\" runs the whole C++ path, including its own FFmpeg JPEG decode. The last "
         "column is trtexec's mean GPU time for the engine alone at batch 1: no decode, no "
-        "pre/postprocessing, no copies. It is not an end-to-end number.",
+        "pre/postprocessing, no copies. It is not an end-to-end number. INT8 is post-training "
+        "quantization with explicit Q/DQ (Model Optimizer, entropy or max calibration on 512 "
+        "COCO train images). ⚠ YOLOX-M with INT8 + FP16 gives wrong output on TensorRT 11.3; "
+        "keeping the non-quantized layers in FP32 restores accuracy but is no faster than plain "
+        "FP16, so YOLOX-M deploys as FP16.",
     ]
     return "\n".join(rows)
 
