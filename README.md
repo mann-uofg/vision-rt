@@ -7,8 +7,8 @@ The point is the end-to-end number, broken down per stage, not model-only FPS.
 The scenario is livestock monitoring: YOLOX detects cows (a COCO class, so no fine-tuning)
 in public-domain USDA dairy footage.
 
-> Work in progress. M0-M2 are done: the whole per-frame path runs on the GPU. Next: INT8 and
-> multiple camera streams (M3).
+> Work in progress. M0-M3 are done: the whole per-frame path runs on the GPU, INT8 is measured,
+> and one GPU serves 32 live 1080p cameras. Next: the demo video and write-up (M4).
 
 ## Results so far
 
@@ -70,10 +70,58 @@ C++ reference in the tests ([`tests/test_gpu_kernels.py`](tests/test_gpu_kernels
 | YOLOX-S | fp32 | 40.26 | 3.13 / 4.35 ms | 317 | 480 | 1.98 ms | 6.6x |
 | YOLOX-S | tf32 | 40.26 | 2.86 / 4.01 ms | 346 | 583 | 1.62 ms | 8.0x |
 | YOLOX-S | fp16 | 40.25 | 1.80 / 2.93 ms | 548 | 775 | 0.77 ms | 10.6x |
+| YOLOX-S | int8 (entropy) | 39.61 | 1.93 / 3.14 ms | 511 | 776 | 0.75 ms | 10.7x |
 | YOLOX-M | fp32 | 46.63 | 5.32 / 6.50 ms | 187 | 244 | 4.06 ms | 4.0x |
 | YOLOX-M | tf32 | 46.63 | 5.07 / 6.36 ms | 196 | 258 | 3.63 ms | 4.2x |
 | YOLOX-M | fp16 | 46.63 | 2.74 / 3.95 ms | 361 | 645 | 1.43 ms | 10.5x |
+| YOLOX-M | int8, fp32 elsewhere | 45.54 | 2.74 / 3.85 ms | 361 | 624 | 1.47 ms | 10.2x |
 <!-- m2:end -->
+
+### Many cameras on one GPU
+
+Each camera stream gets its own NVDEC decoder, CUDA stream, TensorRT execution context and
+worker thread; the engine itself is loaded once and shared
+([`apps/vrt_multistream.cpp`](apps/vrt_multistream.cpp), [`bench/run_multistream.sh`](bench/run_multistream.sh)).
+
+![Scaling](docs/scaling.png)
+
+With every stream running flat out, YOLOX-S FP16 tops out at about **1,700 fps across all
+streams** from 6 streams on. The GPU is ~91% busy there while NVDEC sits at ~65%, so the limit
+is GPU compute, not decode; past the knee, throughput stays flat and latency grows linearly
+with the number of streams (that's queueing). Concurrent streams overlap each other's kernels,
+which is why the total beats the ~1,300 fps a single stream's 0.77 ms of GPU work would allow.
+YOLOX-M saturates the GPU at 3 streams (~1,000 fps).
+
+![Real-time cameras](docs/realtime.png)
+
+Paced like real cameras (30 fps each, phases spread across the frame interval, one frame at a
+time), one RTX 5070 Ti runs **32 cameras with YOLOX-S and every stream's p99 under 5.4 ms**,
+or 24 with YOLOX-M (p99 under 5.6 ms). One step further, the tail blows up: at 40 cameras
+YOLOX-S demand is ~83% of what the GPU serves one frame at a time (~1,450 fps), and while the
+median stays at 2.7 ms, p99 jumps to ~0.7 s. At 32 cameras YOLOX-M needs more than the GPU can
+give and falls behind.
+
+### Accuracy vs latency
+
+![Pareto](docs/pareto.png)
+
+FP16 is the frontier for both sizes. TF32 and FP32 add latency for no accuracy. INT8
+(post-training, explicit Q/DQ from TensorRT Model Optimizer, entropy calibration on COCO
+*train* images) costs YOLOX-S 0.64 mAP and gains nothing end to end: at batch 1 the engine is
+only 6% faster and the pipeline is decode-bound. YOLOX-M with INT8 + FP16 gives wrong output
+on TensorRT 11.3; the bisection and what was ruled out are in
+[`int8_yolox_m_investigation.json`](bench/results/int8_yolox_m_investigation.json).
+
+### TensorRT's built-in NMS layer vs mine
+
+TensorRT 11 replaced the EfficientNMS plugin with a built-in NMS layer. Appending ONNX
+NonMaxSuppression to the graph ([`tools/add_nms.py`](tools/add_nms.py)) and running it against
+my NMS on the same raw predictions over COCO val
+([`tools/compare_nms_layer.py`](tools/compare_nms_layer.py)): identical mAP (40.248), identical
+boxes on 4,991 of 5,000 images at deploy thresholds. But the layer's output size is
+data-dependent, so inference has to sync with the host mid-run and the engine can no longer be
+captured as a CUDA graph: it adds ~0.46 ms per frame on real images and takes the engine from
+0.57 to ~2.5 ms in trtexec. My kernels write a fixed-size result block and cost ~0.15 ms.
 
 ### Accuracy per precision
 
@@ -83,11 +131,15 @@ C++ reference in the tests ([`tests/test_gpu_kernels.py`](tests/test_gpu_kernels
 | YOLOX-S | fp32 | 40.26 | 40.26 | 40.23 | 1.82 ms |
 | YOLOX-S | tf32 | 40.26 | 40.26 | — | 1.48 ms |
 | YOLOX-S | fp16 | — | 40.25 | 40.24 | 0.57 ms |
+| YOLOX-S | int8 (entropy) | — | 39.61 | — | 0.54 ms |
+| YOLOX-S | int8 (max calib.) | — | 38.57 | — | 0.56 ms |
 | YOLOX-M | fp32 | 46.63 | 46.63 | — | 3.90 ms |
 | YOLOX-M | tf32 | 46.64 | 46.63 | — | 3.49 ms |
 | YOLOX-M | fp16 | — | 46.63 | 46.65 | 1.25 ms |
+| YOLOX-M | int8 (entropy) ⚠ | — | 18.29 | — | 1.04 ms |
+| YOLOX-M | int8, fp32 elsewhere | — | 45.54 | — | 1.25 ms |
 
-COCO val2017 mAP@0.5:0.95, all 5,000 images, score threshold 0.01, NMS IoU 0.65. "C++ app" runs the whole C++ path, including its own FFmpeg JPEG decode. The last column is trtexec's mean GPU time for the engine alone at batch 1: no decode, no pre/postprocessing, no copies. It is not an end-to-end number.
+COCO val2017 mAP@0.5:0.95, all 5,000 images, score threshold 0.01, NMS IoU 0.65. "C++ app" runs the whole C++ path, including its own FFmpeg JPEG decode. The last column is trtexec's mean GPU time for the engine alone at batch 1: no decode, no pre/postprocessing, no copies. It is not an end-to-end number. INT8 is post-training quantization with explicit Q/DQ (Model Optimizer, entropy or max calibration on 512 COCO train images). ⚠ YOLOX-M with INT8 + FP16 gives wrong output on TensorRT 11.3; keeping the non-quantized layers in FP32 restores accuracy but is no faster than plain FP16, so YOLOX-M deploys as FP16.
 <!-- accuracy:end -->
 
 The published YOLOX numbers are 40.5 / 46.9. With score threshold 0.001 instead of 0.01, this
@@ -100,7 +152,7 @@ pipeline gives 40.45 for YOLOX-S, so the small gap is the threshold, not the pip
 | M0 Baseline | Toolchain verified on Blackwell; naive PyTorch pipeline with per-stage timing; baseline COCO mAP | done |
 | M1 TensorRT FP16 | ONNX export, FP16 engine, C++ inference app, mAP matches baseline | done |
 | M2 GPU pipeline | NVDEC decode, fused preprocessing kernel, GPU NMS, streams and pinned memory, Nsight timeline | done |
-| M3 INT8 + multi-stream | INT8 (explicit Q/DQ), mAP per precision, multi-stream scaling curve | |
+| M3 INT8 + multi-stream | INT8 (explicit Q/DQ), mAP per precision, multi-stream scaling curve | done |
 | M4 Ship | Demo video, accuracy-vs-latency plot, write-up | |
 
 ## Setup
@@ -141,6 +193,9 @@ cmake --preset release && cmake --build --preset release && ctest --preset relea
 bench/build_engines.sh                                        # ONNX export + fp32/tf32/fp16 engines
 python tools/eval_coco.py --size s --engine models/yolox_s_fp16.engine
 bench/run_cpp_sync.sh                                         # C++ pipeline, all engines, vs baseline
+bench/run_all.sh                                              # decode, baseline, every pipeline
+bench/run_multistream.sh                                      # scaling: capacity and 30 fps cameras
+python tools/quantize_int8.py --size s                        # INT8 Q/DQ ONNX (needs make_calib.py)
 python bench/make_tables.py                                   # regenerate the tables above
 ```
 
