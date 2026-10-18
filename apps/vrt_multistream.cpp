@@ -17,8 +17,6 @@
 //
 // While the timed frames run, NVML samples GPU and decoder (NVDEC) utilisation.
 
-#include <nvml.h>
-
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -32,6 +30,7 @@
 #include "vrt/cuda_check.h"
 #include "vrt/gpu_pipeline.h"
 #include "vrt/nvdec_source.h"
+#include "vrt/nvml_sampler.h"
 #include "vrt/postprocess.h"
 #include "vrt/stats.h"
 #include "vrt/sync_pipeline.h"
@@ -126,52 +125,6 @@ void run_stream(Stream& s, const Config& c, double phase, std::latch& start,
   }
 }
 
-// Mean GPU and decoder utilisation (%) while `running` is set.
-class UtilSampler {
- public:
-  UtilSampler() {
-    if (nvmlInit_v2() == NVML_SUCCESS && nvmlDeviceGetHandleByIndex_v2(0, &dev_) == NVML_SUCCESS)
-      ok_ = true;
-  }
-  ~UtilSampler() {
-    stop();
-    if (ok_) nvmlShutdown();
-  }
-  void start() {
-    if (!ok_) return;
-    running_ = true;
-    thread_ = std::thread([this] {
-      while (running_) {
-        nvmlUtilization_t u{};
-        unsigned dec = 0, period = 0;
-        if (nvmlDeviceGetUtilizationRates(dev_, &u) == NVML_SUCCESS) gpu_.push_back(u.gpu);
-        if (nvmlDeviceGetDecoderUtilization(dev_, &dec, &period) == NVML_SUCCESS)
-          dec_.push_back(dec);
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-      }
-    });
-  }
-  void stop() {
-    running_ = false;
-    if (thread_.joinable()) thread_.join();
-  }
-  double gpu_mean() const { return mean(gpu_); }
-  double decoder_mean() const { return mean(dec_); }
-
- private:
-  static double mean(const std::vector<double>& v) {
-    if (v.empty()) return -1;
-    double s = 0;
-    for (double x : v) s += x;
-    return s / static_cast<double>(v.size());
-  }
-  nvmlDevice_t dev_{};
-  bool ok_ = false;
-  std::atomic<bool> running_{false};
-  std::thread thread_;
-  std::vector<double> gpu_, dec_;  // written by the sampling thread, read after it joins
-};
-
 int run(const vrt::Args& args) {
   const std::string engine_path = args.required("engine");
   const std::vector<std::string> videos = split(args.required("videos"), ',');
@@ -193,7 +146,7 @@ int run(const vrt::Args& args) {
     s.src = std::make_unique<vrt::NvdecSource>(s.video, *s.cuda, vrt::GpuPipeline::kSlots);
   }
 
-  UtilSampler sampler;
+  vrt::UtilSampler sampler;
   std::latch start(n + 1);
   std::atomic<int> warm{0};
   std::vector<std::thread> threads;
